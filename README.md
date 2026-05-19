@@ -1,86 +1,132 @@
 # beeper-matrix-proxy
 
-`beeper-matrix-proxy` is an experimental Matrix-to-Beeper custom bridge built on
+**Expose rooms from a private Matrix homeserver inside Beeper Desktop, using a
+stock Beeper client and a bridgev2 custom bridge.**
+
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Matrix](https://img.shields.io/badge/Matrix-bridge-black?logo=matrix&logoColor=white)](https://matrix.org/)
+[![Beeper](https://img.shields.io/badge/Beeper-bridgev2-35C759)](https://developers.beeper.com/bridges/self-hosting)
+[![Status](https://img.shields.io/badge/status-experimental-orange)](#current-status)
+
+`beeper-matrix-proxy` is an experimental Matrix-to-Beeper proxy built on
 [`mautrix-go` bridgev2](https://pkg.go.dev/maunium.net/go/mautrix/bridgev2).
+It treats a normal Matrix homeserver as the remote network and exposes joined
+rooms inside Beeper through Beeper's self-hosted bridge flow (`bbctl`).
 
-It treats a normal Matrix homeserver as the "remote network" and exposes its
-rooms inside Beeper through Beeper's self-hosted bridge flow (`bbctl`). The goal
-is to make private Matrix rooms usable from the stock Beeper Desktop client
-without patching Beeper's app bundle.
+It does **not** patch Beeper Desktop. The bridge tries to speak the data contract
+that Beeper already understands: room features, Matrix events, media metadata,
+portal rooms, and appservice websocket traffic.
 
-## Why This Exists
+## The Short Version
 
-Beeper Cloud does not federate with arbitrary Matrix homeservers. A private
-Synapse, Dendrite, or Conduit server therefore cannot simply join Beeper by
-federation. This project uses the supported Application Service bridge path
-instead:
+| Question | Answer |
+|---|---|
+| Can I sign into an arbitrary Matrix homeserver directly from Beeper Desktop? | Not generally. Beeper Desktop is designed around Beeper accounts and Beeper-managed bridge accounts. |
+| Can this project show rooms from my private Matrix server in Beeper? | Yes, that is the goal: private Matrix homeserver -> this bridge -> Beeper. |
+| Can this reuse Beeper Cloud's existing WhatsApp/Telegram/Signal bridges on my own Synapse? | Not directly. Those bridges are registered to Beeper's homeserver and account model. |
+| Can I run official/community bridges for my own Synapse instead? | Yes. Run the upstream Matrix bridge against your Synapse as its own appservice. |
+| Can one bridge feed both Beeper and my Synapse? | Usually not safely from the same database. Run separate bridge instances or build a dedicated fanout layer. |
 
-```text
-Private Matrix homeserver <-> beeper-matrix-proxy <-> Beeper bridgev2 / Hungryserv <-> Beeper Desktop
+## Architecture
+
+```mermaid
+flowchart LR
+  A["Private Matrix homeserver<br/>Synapse, Dendrite, Conduit"] -->|/sync, media, state| B["beeper-matrix-proxy<br/>mautrix-go bridgev2"]
+  B -->|appservice websocket| C["Beeper bridge manager<br/>bbctl / Hungryserv"]
+  C --> D["Beeper Desktop<br/>stock client"]
+  D --> C --> B --> A
 ```
 
-The bridge focuses on the Beeper Desktop data contract:
+Beeper's official self-hosting docs describe `bbctl` as a tool for running
+self-hosted bridges with a Beeper account. Beeper's bridge metadata also
+distinguishes cloud, self-hosted, local, and platform-sdk providers. This matters
+because a Beeper Cloud bridge is not a portable appservice registration that can
+simply be pointed at your own Synapse.
 
-- room capabilities via `com.beeper.room_features`
-- stable remote/local event ID mapping
-- Matrix media reupload in both directions
-- history backfill with dedupe-aware IDs
-- Beeper-friendly payloads for edits, replies, polls, GIFs, and voice messages
+## Current Status
 
-## Current Feature Matrix
+This is a working research/prototype bridge, not a polished product. It already
+contains the core compatibility fixes that made private Matrix rooms usable in
+Beeper during testing:
 
-| Feature | Status | Direction | Notes |
-|---|---:|---|---|
-| Text messages | Supported | Matrix -> Beeper, Beeper -> Matrix | Basic `m.room.message` text round-trips. |
-| Fast message bursts | Supported | Matrix -> Beeper | Remote `/sync` timeline limit is raised to avoid dropping bursts. |
-| Room discovery | Supported | Matrix -> Beeper | Joined remote Matrix rooms are synced as Beeper portal rooms. |
-| Room names/topics | Supported | Matrix -> Beeper | Pulled from Matrix room state during chat sync. |
-| Replies | Supported | Both | Beeper-local event IDs are remapped to remote Matrix event IDs before forwarding. |
-| Threads | Partial | Both | Thread root IDs are remapped; deep client behavior still needs broader UI testing. |
-| Reactions | Partial | Both | Add/remove paths exist with event ID remapping; more cross-client tests are needed. |
-| Edits | Supported | Both | Matrix edit fallback prefixes such as `* ` are stripped before Beeper rendering. |
-| Redactions / deletes | Partial | Both | Live message deletion paths exist; historical cleanup needs explicit redaction tooling. |
-| Images | Supported | Both | Media is downloaded and reuploaded between homeservers. |
-| Files | Supported | Both | Same media path as images; max upload size is advertised conservatively. |
-| Videos | Partial | Both | Standard media works; very large files depend on proxy and homeserver limits. |
-| GIF rendering | Partial | Both | GIF metadata flags are preserved/normalized where possible; transcoding is not implemented yet. |
-| Voice messages | Partial | Both | Voice capability/payload support exists; waveform and codec coverage needs more device testing. |
-| Polls | Partial | Matrix -> Beeper | Poll start payloads are normalized with MSC1767 text fallbacks; vote/end flows need more E2E tests. |
-| Backfill / history | Partial | Matrix -> Beeper | Backfill APIs are implemented; old placeholder cleanup is deliberately not automatic. |
-| Avatars | Partial | Matrix -> Beeper | Downloadable avatars work; stale remote media still depends on better direct-media handling. |
-| Typing notifications | Not implemented | Both | Not wired yet. |
-| Read receipts | Not implemented | Both | Not wired yet. |
-| Native audio/video calls | Not supported | Both | Beeper custom bridges should expose calls as notices or links, not fake native call UI. |
-| End-to-end encryption | Not a goal yet | Both | The bridge handles decrypted bridge traffic; production E2EE needs a separate design pass. |
+- burst-safe Matrix `/sync`
+- room discovery and portal creation
+- message, edit, reply, and relation ID rewriting
+- Beeper-compatible poll fallback normalization
+- media reupload between homeservers
+- conservative media size capabilities to avoid proxy-side HTTP 413 failures
 
-## What Was Verified
+The remaining work is mostly around completeness: direct media proxying, richer
+voice/GIF behavior, receipts, typing notifications, and safe cleanup tooling for
+old broken backfill events.
 
-The current implementation has regression tests for the most important bridge
-contract fixes:
+## Feature Matrix
 
-- Matrix sync burst preservation
-- Beeper reply/thread relation remapping
-- edit fallback cleanup
-- poll payload text fallback normalization
-- media URL handling and upload limit behavior
+Legend:
 
-Run them with:
+- **Supported**: implemented and covered by tests or live smoke testing
+- **Partial**: implemented enough to be useful, but still missing edge cases or full E2E coverage
+- **Planned**: intentionally not wired yet
+- **Not supported**: not safe to expose as a native Beeper feature
 
-```bash
-CGO_CFLAGS="-I/opt/homebrew/opt/libolm/include" \
-CGO_LDFLAGS="-L/opt/homebrew/opt/libolm/lib -lolm" \
-go test ./...
-```
+| Feature | Status | Direction | Verification | Notes |
+|---|---:|---|---|---|
+| Text messages | Supported | Matrix -> Beeper, Beeper -> Matrix | Live smoke test | Plain `m.room.message` events round-trip. |
+| Burst delivery | Supported | Matrix -> Beeper | Regression test + live 8/8 burst test | Remote sync timeline limit is raised to avoid losing fast messages. |
+| Room discovery | Supported | Matrix -> Beeper | Live smoke test | Joined remote Matrix rooms are synced as Beeper portal rooms. |
+| Room name/topic | Supported | Matrix -> Beeper | Code path | Uses Matrix room state during chat sync. |
+| Replies | Supported | Both | Regression test + live raw-event check | Beeper-local event IDs are rewritten to remote Matrix IDs. |
+| Threads | Partial | Both | Regression test | Thread root IDs are rewritten; deeper UI behavior needs more testing. |
+| Reactions | Partial | Both | Code path | Add/remove paths exist; broader Matrix client compatibility needs tests. |
+| Edits | Supported | Both | Regression test + live smoke test | Legacy Matrix edit fallback prefixes are stripped for Beeper rendering. |
+| Redactions / deletes | Partial | Both | Code path | Live delete paths exist; historical cleanup requires explicit redaction tooling. |
+| Images | Supported | Both | Regression test | Media is downloaded and reuploaded across homeservers. |
+| Files | Supported | Both | Regression test | Same media path as images; upload size is capability-capped. |
+| Videos | Partial | Both | Code path | Works as media; large files depend on real proxy and homeserver limits. |
+| GIFs | Partial | Both | Code path | Metadata handling exists; GIF-to-MP4 transcoding is not implemented yet. |
+| Voice messages | Partial | Both | Payload support | Voice metadata is supported; waveform generation needs more work. |
+| Polls | Partial | Matrix -> Beeper | Regression test + log-level E2E | Poll starts are normalized with MSC1767 text fallbacks; votes/end need E2E tests. |
+| Backfill / history | Partial | Matrix -> Beeper | Code path | Backfill APIs exist; safe placeholder cleanup is intentionally separate. |
+| Avatars | Partial | Matrix -> Beeper | Code path | Downloadable avatars work; stale media needs direct-media proxying. |
+| Typing notifications | Planned | Both | Not implemented | Needs ephemeral event wiring. |
+| Read receipts | Planned | Both | Not implemented | Needs receipt mapping and rate limiting. |
+| Native audio/video calls | Not supported | Both | Intentionally hidden | Custom bridges should emit call notices/links instead of fake native call UI. |
+| End-to-end encryption | Planned | Both | Not implemented as a product feature | Needs a separate device, key, and trust model design. |
+
+## Can This Reuse Existing Beeper Bridges?
+
+Short answer: **not directly**.
+
+Beeper's own bridges are Matrix bridges, but the running bridge account is tied
+to where it runs:
+
+| Existing bridge type | Can this proxy reuse it for your own Synapse? | Why |
+|---|---:|---|
+| Beeper Cloud bridge | No | It is registered to Beeper's infrastructure and Beeper account model, not your Synapse appservice namespace. |
+| Beeper self-hosted bridge via `bbctl` | Not directly | `bbctl` generates Beeper-side appservice config. The same process/database should not be blindly attached to another homeserver. |
+| Beeper local/on-device bridge | No | It behaves like a local account provider for Beeper, not a generic Matrix appservice for Synapse. |
+| Official mautrix bridge run against your Synapse | Yes | Register it as an appservice on your homeserver using the bridge's normal docs. |
+| Dedicated fanout bridge | Possible | A custom layer could mirror events into both Beeper and Synapse, but must solve dedupe, edits, redactions, media, and identity mapping. |
+
+The practical patterns are:
+
+1. **Private Matrix in Beeper**: use this project.
+2. **WhatsApp/Telegram/Signal in your own Matrix server**: run the relevant
+   official/community Matrix bridge against your own homeserver.
+3. **Same external account in both Beeper and your Matrix server**: run two
+   separate bridge instances if the upstream network allows it, or design a
+   dedicated fanout bridge. Sharing one live bridge database between two
+   homeservers is a recipe for broken rooms and duplicate state.
 
 ## Setup
 
-### 1. Install requirements
+### Requirements
 
 - Go 1.25+
-- `libolm` for Matrix crypto support
-- Beeper bridge manager (`bbctl`)
-- A Beeper account that can run self-hosted bridges
-- A Matrix account on the remote homeserver
+- `libolm`
+- Beeper Bridge Manager (`bbctl`)
+- a Beeper account with self-hosted bridge support
+- a Matrix account on the remote homeserver you want to expose in Beeper
 
 On macOS:
 
@@ -88,7 +134,7 @@ On macOS:
 brew install libolm
 ```
 
-### 2. Build
+### Build
 
 ```bash
 CGO_CFLAGS="-I/opt/homebrew/opt/libolm/include" \
@@ -96,9 +142,7 @@ CGO_LDFLAGS="-L/opt/homebrew/opt/libolm/lib -lolm" \
 go build -o beeper-matrix-proxy
 ```
 
-### 3. Configure the remote Matrix homeserver
-
-Set the remote homeserver URL with `LOCAL_MATRIX_HS`:
+### Configure the Remote Matrix Homeserver
 
 ```bash
 export LOCAL_MATRIX_HS="https://matrix.example.com"
@@ -109,22 +153,32 @@ Optional environment variables:
 | Variable | Default | Purpose |
 |---|---:|---|
 | `LOCAL_MATRIX_HS` | `https://matrix.example.com` | Remote Matrix homeserver used for user login and sync. |
-| `LOCAL_MATRIX_INSECURE_TLS` | enabled unless set to `0` | Allows self-signed or private TLS during local development. |
+| `LOCAL_MATRIX_INSECURE_TLS` | enabled unless set to `0` | Allows self-signed or private TLS during development. |
 | `LOCAL_MATRIX_INITIAL_BACKFILL_LIMIT` | `0` | Initial history import limit. |
-| `LOCAL_MATRIX_MAX_UPLOAD_SIZE` | remote media config | Caps the size advertised to Beeper. Useful when a proxy returns HTTP 413 before Synapse does. |
+| `LOCAL_MATRIX_MAX_UPLOAD_SIZE` | remote media config | Caps the size advertised to Beeper when a proxy has a smaller real limit. |
+| `BEEPER_MATRIX_PROXY_DIR` | current directory | Directory used by `run-bridge.sh`. |
+| `BEEPER_MATRIX_PROXY_BINARY` | `./beeper-matrix-proxy` | Binary used by `run-bridge.sh`. |
+| `BEEPER_BBCTL` | `bbctl` | `bbctl` binary path. |
 
-### 4. Generate bridge config
+### Generate Config
 
 ```bash
 go run . --generate-example-config -c config.yaml
 go run . -g -c config.yaml -r registration.yaml
 ```
 
-Fill in the Beeper bridge-manager config as usual for a bridgev2 custom bridge.
-Do not commit `config.yaml`, `registration.yaml`, databases, logs, or binaries.
+Fill the generated config with the appservice values from Beeper Bridge Manager.
+Keep these files local:
+
+- `config.yaml`
+- `registration.yaml`
+- bridge databases
+- logs
+- built binaries
+
 They are ignored by `.gitignore`.
 
-### 5. Run with bbctl
+### Run
 
 ```bash
 export BEEPER_MATRIX_PROXY_DIR="$PWD"
@@ -135,16 +189,33 @@ export BEEPER_MATRIX_PROXY_BINARY="$PWD/beeper-matrix-proxy"
 Then start the login flow from Beeper and authenticate with the remote Matrix
 homeserver username/password.
 
+## Development
+
+Run tests:
+
+```bash
+CGO_CFLAGS="-I/opt/homebrew/opt/libolm/include" \
+CGO_LDFLAGS="-L/opt/homebrew/opt/libolm/lib -lolm" \
+go test ./...
+```
+
+Important test coverage:
+
+| Test area | File |
+|---|---|
+| Sync burst filter, edits, polls, relation rewriting | `connector/bridge_contract_test.go` |
+| Media URLs and upload limits | `connector/media_test.go` |
+
 ## Design Notes
 
-### Beeper room features
+### Beeper Room Features
 
-Beeper Desktop is mostly data-driven. It enables and disables compose actions
-from Matrix room state, especially `com.beeper.room_features`. This bridge sets
-capabilities in code and bumps the bridge info version when the feature contract
-changes, so existing rooms can receive updated state.
+Beeper Desktop enables many compose actions from room state, especially
+`com.beeper.room_features`. The bridge sets capabilities in code and bumps the
+bridge info version when the feature contract changes, so existing rooms can
+receive updated state.
 
-### Event ID mapping
+### Event ID Mapping
 
 Beeper and the remote Matrix homeserver have different event IDs for the same
 logical message. Replies, thread roots, reactions, edits, and deletes must be
@@ -156,33 +227,39 @@ cannot resolve.
 
 Media is reuploaded instead of blindly forwarding `mxc://` URIs. That keeps
 Beeper and the remote Matrix server from trying to dereference unknown media
-repositories. The current implementation intentionally advertises conservative
-upload limits when `LOCAL_MATRIX_MAX_UPLOAD_SIZE` is set, because reverse
-proxies often reject large uploads before Synapse can return a clean Matrix
-error.
+repositories. The bridge can advertise a conservative upload size when the real
+HTTP path has a smaller proxy limit than the homeserver media config claims.
 
 ### Calls
 
-Native audio/video calls are not currently exposed as a supported capability.
-For custom Beeper bridges, the safe behavior is to convert incoming call events
-into `m.notice` messages with a join link. That fallback is planned but not yet
-implemented.
+Native audio/video calls are intentionally not exposed as a supported capability.
+The safe custom-bridge behavior is to convert incoming call events into
+`m.notice` messages with an external join link. That fallback is planned.
 
 ## Roadmap
 
-- Direct media proxy support for stale avatars and older attachments
-- Call notices with Element Call / Matrix room links
-- Better GIF handling, including optional GIF-to-MP4 transcoding
-- Voice waveform generation fallback for clients that do not provide one
-- Full poll vote/end round-trip tests
-- Safe dry-run and apply tooling for redacting old backfill placeholders
-- Typing notifications and read receipts
+| Priority | Work item | Why it matters |
+|---:|---|---|
+| 1 | Direct media proxy support | Fix stale avatars and old media without Synapse 502 failures. |
+| 1 | Safe ghost cleanup tool | Redact old placeholder events without hand-editing databases. |
+| 2 | Call notices | Preserve call awareness without pretending Beeper has native custom-bridge calls. |
+| 2 | Voice waveform fallback | Make voice notes render reliably when the source client omits waveform data. |
+| 2 | Poll vote/end round-trip | Finish full MSC3381 behavior in both directions. |
+| 3 | Typing notifications | Improve real-time feel. |
+| 3 | Read receipts | Improve parity with normal Beeper rooms. |
+| 3 | Optional GIF transcoding | Reduce large GIF upload failures and improve autoplay behavior. |
 
 ## Safety
 
-This project is young and bridge code can create real Matrix events. Test in a
-small room first, keep backups of bridge databases, and use dry-runs for any
-history cleanup or redaction tooling.
+This bridge creates real Matrix events. Test in small rooms first, keep backups
+of bridge databases, and use dry-runs for cleanup/redaction tooling.
+
+## References
+
+- [Beeper self-hosted bridges](https://developers.beeper.com/bridges/self-hosting)
+- [Beeper bridge metadata providers](https://developers.beeper.com/desktop-api-reference/cli/resources/bridges)
+- [Beeper bridge-manager](https://github.com/beeper/bridge-manager)
+- [mautrix-go bridgev2](https://pkg.go.dev/maunium.net/go/mautrix/bridgev2)
 
 ## License
 
