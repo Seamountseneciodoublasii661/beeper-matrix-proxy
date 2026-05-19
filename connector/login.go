@@ -7,10 +7,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/status"
+	"maunium.net/go/mautrix/id"
 )
 
 const (
@@ -35,7 +37,7 @@ func (sl *SimpleLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeUserInput,
 		StepID:       LoginStepIDUsernamePassword,
-		Instructions: "Enter your username and password for the 'Simple Network'.",
+		Instructions: "Enter your username and password for the VCVM Matrix homeserver.",
 		UserInputParams: &bridgev2.LoginUserInputParams{
 			Fields: []bridgev2.LoginInputDataField{
 				{
@@ -57,23 +59,48 @@ func (sl *SimpleLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	username := input["username"]
 	password := input["password"]
-	_ = password
 
 	if username == "" {
 		return nil, fmt.Errorf("username cannot be empty")
 	}
+	if password == "" {
+		return nil, fmt.Errorf("password cannot be empty")
+	}
 
-	sl.Log.Info().Str("username", username).Msg("Received login credentials (no actual validation performed)")
+	cli, err := newLocalMatrixClient("", "")
+	if err != nil {
+		return nil, err
+	}
+	loginResp, err := cli.Login(ctx, &mautrix.ReqLogin{
+		Type: mautrix.AuthTypePassword,
+		Identifier: mautrix.UserIdentifier{
+			Type: "m.id.user",
+			User: username,
+		},
+		Password:                 password,
+		InitialDeviceDisplayName: "Beeper VCVM Matrix bridge",
+		StoreCredentials:         true,
+		StoreHomeserverURL:       true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to log in to VCVM Matrix: %w", err)
+	}
 
 	namespace := uuid.MustParse("f7a4f3e3-5d5a-4a9e-8d8a-3b0b9e8a1b2c")
-	loginIDStr := uuid.NewSHA1(namespace, []byte(strings.ToLower(username))).String()
+	loginIDStr := uuid.NewSHA1(namespace, []byte(strings.ToLower(loginResp.UserID.String()))).String()
 	var loginID networkid.UserLoginID = networkid.UserLoginID(loginIDStr)
 
 	ul, err := sl.User.NewLogin(ctx, &database.UserLogin{
 		ID:         loginID,
-		RemoteName: username,
+		RemoteName: loginResp.UserID.String(),
 		RemoteProfile: status.RemoteProfile{
-			Name: username,
+			Name: loginResp.UserID.String(),
+		},
+		Metadata: &LoginMetadata{
+			RemoteUserID: loginResp.UserID.String(),
+			UserID:       loginResp.UserID.String(),
+			AccessToken:  loginResp.AccessToken,
+			DeviceID:     string(loginResp.DeviceID),
 		},
 	}, &bridgev2.NewLoginParams{
 		DeleteOnConflict: false,
@@ -84,18 +111,18 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 	}
 
 	sl.Log.Info().Str("login_id", string(ul.ID)).Msg("Successfully 'logged in' and created user login")
+	cli.UserID = id.UserID(loginResp.UserID)
+	cli.AccessToken = loginResp.AccessToken
 
 	err = sl.Main.LoadUserLogin(ctx, ul)
 	if err != nil {
 		sl.Log.Err(err).Msg("Failed to load user login after creation (this might indicate an issue)")
 	}
 
-	go sl.Main.createWelcomeRoomAndSendIntro(ul)
-
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
 		StepID:       LoginStepIDComplete,
-		Instructions: fmt.Sprintf("Successfully logged in as '%s'", username),
+		Instructions: fmt.Sprintf("Successfully logged in as '%s'", loginResp.UserID.String()),
 		CompleteParams: &bridgev2.LoginCompleteParams{
 			UserLoginID: ul.ID,
 			UserLogin:   ul,

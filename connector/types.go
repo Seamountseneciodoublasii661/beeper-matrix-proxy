@@ -11,6 +11,7 @@ import (
 // Use this for connector-specific fields that don't fit in core bridge tables.
 type LoginMetadata struct {
 	RemoteUserID string     `json:"remote_user_id,omitempty"`
+	UserID       string     `json:"user_id,omitempty"`
 	AccessToken  string     `json:"access_token,omitempty"`
 	ExpiresAt    time.Time  `json:"expires_at,omitempty"`
 	DeviceID     string     `json:"device_id,omitempty"`
@@ -52,4 +53,15 @@ type PortalMetadata struct {
 // New creates a new instance for database registration.
 func (m *PortalMetadata) New() any {
 	return &PortalMetadata{}
+}
+
+// ReactionMetadata stores the remote Synapse reaction event ID so Beeper-side
+// reaction removals can redact the matching remote Matrix event.
+type ReactionMetadata struct {
+	RemoteEventID string `json:"remote_event_id,omitempty"`
+}
+
+// New creates a new instance for database registration.
+func (m *ReactionMetadata) New() any {
+	return &ReactionMetadata{}
 }

@@ -2,17 +2,20 @@ package connector
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
-	"math/rand"
+	"net/http"
+	"os"
 	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/configupgrade"
-	"go.mau.fi/util/ptr"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
-	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/bridgev2/simplevent"
+	"maunium.net/go/mautrix/id"
 )
 
 // Ensure MyConnector implements NetworkConnector.
@@ -41,13 +44,13 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 // GetName implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetName() bridgev2.BridgeName {
 	return bridgev2.BridgeName{
-		DisplayName:          "Simple Bridge",
-		NetworkURL:           "https://example.org",
+		DisplayName:          "VCVM Matrix",
+		NetworkURL:           localHomeserverURL(),
 		NetworkIcon:          "",
-		NetworkID:            "simplenetwork",
-		BeeperBridgeType:     "simple",
-		DefaultPort:          29319,
-		DefaultCommandPrefix: "!simple",
+		NetworkID:            "vcvm-matrix",
+		BeeperBridgeType:     "vcvm-matrix",
+		DefaultPort:          29320,
+		DefaultCommandPrefix: "!vcvm",
 	}
 }
 
@@ -70,6 +73,9 @@ func (c *MyConnector) GetDBMetaTypes() database.MetaTypes {
 		Ghost: func() any {
 			return &GhostMetadata{}
 		},
+		Reaction: func() any {
+			return &ReactionMetadata{}
+		},
 		UserLogin: func() any {
 			return &LoginMetadata{}
 		},
@@ -81,7 +87,7 @@ func (c *MyConnector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
 		ID:          LoginFlowIDUsernamePassword,
 		Name:        "Username & Password",
-		Description: "Log in using a username and password (no actual validation).",
+		Description: "Log in to the VCVM Matrix homeserver.",
 	}}
 }
 
@@ -99,12 +105,12 @@ func (c *MyConnector) CreateLogin(ctx context.Context, user *bridgev2.User, flow
 
 // GetConfig implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetConfig() (string, any, configupgrade.Upgrader) {
-	return "simple-config.yaml", nil, nil
+	return "vcvm-matrix.yaml", nil, nil
 }
 
 // GetBridgeInfoVersion implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetBridgeInfoVersion() (int, int) {
-	return 1, 0
+	return 1, 5
 }
 
 // Start implements bridgev2.NetworkConnector.
@@ -128,10 +134,20 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		Msg("LoadUserLogin called")
 
 	client := &MyNetworkClient{
-		log:       c.log.With().Str("user_id", string(login.ID)).Logger(),
-		bridge:    c.bridge,
-		login:     login,
-		connector: c,
+		log:        c.log.With().Str("user_id", string(login.ID)).Logger(),
+		bridge:     c.bridge,
+		login:      login,
+		connector:  c,
+		sentEvents: make(map[id.EventID]struct{}),
+	}
+	if meta, ok := login.Metadata.(*LoginMetadata); ok {
+		cli, err := newLocalMatrixClient(meta.UserID, meta.AccessToken)
+		if err != nil {
+			return err
+		}
+		cli.DeviceID = id.DeviceID(meta.DeviceID)
+		client.mx = cli
+		client.loggedIn = meta.AccessToken != ""
 	}
 
 	login.Client = client
@@ -142,95 +158,40 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		Interface("client_type", client).
 		Msg("Created and stored MyNetworkClient")
 
-	go c.createWelcomeRoomAndSendIntro(login)
-
 	return nil
 }
 
-// createWelcomeRoomAndSendIntro performs the room creation and ghost interaction logic.
-func (c *MyConnector) createWelcomeRoomAndSendIntro(login *bridgev2.UserLogin) {
-	ctx := context.Background()
-	user := login.User
-	log := c.log.With().Str("user_mxid", string(user.MXID)).Str("login_id", string(login.ID)).Logger()
-	ctx = log.WithContext(ctx)
-
-	rand.Seed(time.Now().UnixNano())
-
-	log.Info().Msg("Starting welcome room creation process")
-
-	portalID := networkid.PortalID("welcome-room")
-	portalKey := networkid.PortalKey{
-		ID: portalID,
+func localHomeserverURL() string {
+	if value := os.Getenv("LOCAL_MATRIX_HS"); value != "" {
+		return value
 	}
+	return "https://vcvm.tail6a40cd.ts.net:3443"
+}
 
-	portal, err := c.bridge.GetPortalByKey(ctx, portalKey)
+func newLocalMatrixClient(userID, accessToken string) (*mautrix.Client, error) {
+	cli, err := mautrix.NewClient(localHomeserverURL(), id.UserID(userID), accessToken)
 	if err != nil {
-		log.Err(err).Str("portal_key", string(portalKey.ID)).Msg("Failed to get portal")
-		return
+		return nil, err
 	}
-
-	log.Info().Str("portal_id", string(portal.ID)).Msg("Successfully retrieved portal")
-
-	ghostNetworkUserID := networkid.UserID(fmt.Sprintf("%s_ghosty_ghost", c.GetNetworkID()))
-	ghostDisplayName := "Ghosty Ghost"
-
-	ghost, err := c.bridge.GetGhostByID(ctx, ghostNetworkUserID)
-	if err != nil {
-		log.Err(err).Str("ghost_network_user_id", string(ghostNetworkUserID)).Msg("Failed to get ghost")
-		return
-	}
-
-	ghostInfo := &bridgev2.UserInfo{
-		Name: &ghostDisplayName,
-	}
-	ghost.UpdateInfo(ctx, ghostInfo)
-
-	log = log.With().Str("ghost_mxid", string(ghost.ID)).Logger()
-	log.Info().Msg("Successfully retrieved/provisioned ghost")
-
-	err = portal.CreateMatrixRoom(ctx, user.GetDefaultLogin(), &bridgev2.ChatInfo{
-		Name:  ptr.Ptr(fmt.Sprintf("Welcome %s!", login.RemoteName)),
-		Topic: ptr.Ptr("Your special welcome room."),
-		Members: &bridgev2.ChatMemberList{Members: []bridgev2.ChatMember{
-			{
-				EventSender: bridgev2.EventSender{
-					Sender:      networkid.UserID(user.MXID),
-					SenderLogin: networkid.UserLoginID(user.GetDefaultLogin().ID),
-				},
-				Membership: event.MembershipJoin,
-				Nickname:   ptr.Ptr(login.RemoteName),
-				PowerLevel: ptr.Ptr(100),
-				UserInfo: &bridgev2.UserInfo{
-					Name: ptr.Ptr(login.RemoteName),
-				},
+	if os.Getenv("LOCAL_MATRIX_INSECURE_TLS") != "0" {
+		cli.Client = &http.Client{
+			Timeout: 180 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
-		}},
+		}
+	}
+	return cli, nil
+}
+
+func (c *MyConnector) resyncRoom(ctx context.Context, login *bridgev2.UserLogin, roomID id.RoomID, info *bridgev2.ChatInfo) {
+	c.bridge.QueueRemoteEvent(login, &simplevent.ChatResync{
+		EventMeta: simplevent.EventMeta{
+			Type:         bridgev2.RemoteEventChatResync,
+			PortalKey:    networkid.PortalKey{ID: networkid.PortalID(roomID), Receiver: login.ID},
+			CreatePortal: true,
+			Timestamp:    time.Now(),
+		},
+		ChatInfo: info,
 	})
-	if err != nil {
-		log.Err(err).Msg("Failed to create matrix room")
-		return
-	}
-	log.Info().Msg("Successfully created matrix room")
-
-	err = ghost.Intent.EnsureJoined(ctx, portal.MXID)
-	if err != nil {
-		log.Err(err).Msg("Failed to ensure ghost was joined before sending message")
-		return
-	}
-
-	greetings := []string{"Hello there!", "Welcome!", "Greetings!", "Hi!", "Hey!"}
-	randomGreeting := greetings[rand.Intn(len(greetings))]
-	messageContent := &event.MessageEventContent{
-		MsgType: event.MsgText,
-		Body:    fmt.Sprintf("%s I'm %s, your friendly welcome bot for the %s bridge.", randomGreeting, ghostDisplayName, c.GetName().DisplayName),
-	}
-
-	content := &event.Content{Parsed: messageContent}
-
-	_, err = ghost.Intent.SendMessage(ctx, portal.MXID, event.EventMessage, content, nil)
-	if err != nil {
-		log.Err(err).Msg("Failed to send welcome message from ghost")
-		return
-	}
-	log.Info().Msg("Successfully sent welcome message from ghost")
 }

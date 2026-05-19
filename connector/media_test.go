@@ -1,0 +1,145 @@
+package connector
+
+import (
+	"bytes"
+	"encoding/json"
+	"image/png"
+	"testing"
+
+	"maunium.net/go/mautrix/crypto/attachment"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
+)
+
+func TestDirectMediaDownloadURLsEscapeMXCParts(t *testing.T) {
+	uri := id.ContentURI{
+		Homeserver: "matrix.example:8448",
+		FileID:     "abc/def+ghi",
+	}
+
+	urls := directMediaDownloadURLs(uri)
+
+	expected := []string{
+		"https://matrix.example:8448/_matrix/media/v3/download/matrix.example:8448/abc%2Fdef+ghi",
+		"https://matrix.example:8448/_matrix/media/r0/download/matrix.example:8448/abc%2Fdef+ghi",
+	}
+	if len(urls) != len(expected) {
+		t.Fatalf("expected %d urls, got %d: %#v", len(expected), len(urls), urls)
+	}
+	for i, want := range expected {
+		if urls[i] != want {
+			t.Fatalf("url %d mismatch:\nwant %s\n got %s", i, want, urls[i])
+		}
+	}
+}
+
+func TestGenerateFallbackAvatarPNG(t *testing.T) {
+	data, err := generateFallbackAvatarPNG("mxc://example.invalid/missing")
+	if err != nil {
+		t.Fatalf("generateFallbackAvatarPNG returned error: %v", err)
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("fallback avatar is not a valid PNG: %v", err)
+	}
+	if got := img.Bounds().Dx(); got != fallbackAvatarSize {
+		t.Fatalf("expected width %d, got %d", fallbackAvatarSize, got)
+	}
+	if got := img.Bounds().Dy(); got != fallbackAvatarSize {
+		t.Fatalf("expected height %d, got %d", fallbackAvatarSize, got)
+	}
+}
+
+func TestNormalizeMediaContentForBeeperMarksAnimatedGIF(t *testing.T) {
+	content := &event.MessageEventContent{
+		MsgType: event.MsgVideo,
+		Body:    "animation.mp4",
+		Info: &event.FileInfo{
+			MimeType: "video/mp4",
+			MauGIF:   true,
+		},
+	}
+
+	normalizeMediaContentForBeeper(content)
+
+	if content.Info == nil {
+		t.Fatal("expected file info")
+	}
+	if !content.Info.MauGIF {
+		t.Fatal("expected fi.mau.gif to remain set")
+	}
+	for _, key := range []string{"fi.mau.loop", "fi.mau.autoplay", "fi.mau.hide_controls", "fi.mau.no_audio"} {
+		if got, ok := content.Info.Extra[key].(bool); !ok || !got {
+			t.Fatalf("expected %s=true in info extra, got %#v", key, content.Info.Extra[key])
+		}
+	}
+}
+
+func TestNormalizeMediaContentForBeeperAddsVoiceFallback(t *testing.T) {
+	content := &event.MessageEventContent{
+		MsgType:      event.MsgAudio,
+		Body:         "voice.ogg",
+		Info:         &event.FileInfo{MimeType: "audio/ogg", Duration: 1234},
+		MSC3245Voice: &event.MSC3245Voice{},
+		MSC1767Audio: nil,
+	}
+
+	normalizeMediaContentForBeeper(content)
+
+	if content.MSC1767Audio == nil {
+		t.Fatal("expected MSC1767 audio fallback")
+	}
+	if content.MSC1767Audio.Duration != 1234 {
+		t.Fatalf("expected duration from file info, got %d", content.MSC1767Audio.Duration)
+	}
+	if len(content.MSC1767Audio.Waveform) != fallbackWaveformSamples {
+		t.Fatalf("expected %d waveform samples, got %d", fallbackWaveformSamples, len(content.MSC1767Audio.Waveform))
+	}
+}
+
+func TestGetLocalMaxUploadSizeUsesEnvironmentOverride(t *testing.T) {
+	t.Setenv("LOCAL_MATRIX_MAX_UPLOAD_SIZE", "12345")
+	nc := &MyNetworkClient{localMaxUploadSize: 98765}
+
+	if got := nc.getLocalMaxUploadSize(); got != 12345 {
+		t.Fatalf("expected env override 12345, got %d", got)
+	}
+}
+
+func TestGetLocalMaxUploadSizeDoesNotAdvertiseAboveSynapseLimit(t *testing.T) {
+	t.Setenv("LOCAL_MATRIX_MAX_UPLOAD_SIZE", "52428800")
+	nc := &MyNetworkClient{localMaxUploadSize: 1048576}
+
+	if got := nc.getLocalMaxUploadSize(); got != 1048576 {
+		t.Fatalf("expected fetched Synapse limit 1048576 to cap env override, got %d", got)
+	}
+}
+
+func TestDecryptEncryptedMediaInPlace(t *testing.T) {
+	plaintext := []byte("hello encrypted matrix media")
+	encrypted := append([]byte(nil), plaintext...)
+	file := &event.EncryptedFileInfo{
+		EncryptedFile: *attachment.NewEncryptedFile(),
+		URL:           id.ContentURIString("mxc://example.invalid/media"),
+	}
+	file.EncryptInPlace(encrypted)
+	if bytes.Equal(encrypted, plaintext) {
+		t.Fatal("test setup failed: ciphertext equals plaintext")
+	}
+	raw, err := json.Marshal(file)
+	if err != nil {
+		t.Fatalf("failed to marshal encrypted file info: %v", err)
+	}
+	var decodedFile event.EncryptedFileInfo
+	if err = json.Unmarshal(raw, &decodedFile); err != nil {
+		t.Fatalf("failed to unmarshal encrypted file info: %v", err)
+	}
+
+	err = decryptEncryptedMediaInPlace(encrypted, &decodedFile)
+	if err != nil {
+		t.Fatalf("decryptEncryptedMediaInPlace returned error: %v", err)
+	}
+	if !bytes.Equal(encrypted, plaintext) {
+		t.Fatalf("expected decrypted plaintext %q, got %q", plaintext, encrypted)
+	}
+}
