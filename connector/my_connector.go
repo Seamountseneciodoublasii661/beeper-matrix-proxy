@@ -44,13 +44,13 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 // GetName implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetName() bridgev2.BridgeName {
 	return bridgev2.BridgeName{
-		DisplayName:          "VCVM Matrix",
+		DisplayName:          "Beeper Matrix Proxy",
 		NetworkURL:           localHomeserverURL(),
 		NetworkIcon:          "",
-		NetworkID:            "vcvm-matrix",
-		BeeperBridgeType:     "vcvm-matrix",
+		NetworkID:            "beeper-matrix-proxy",
+		BeeperBridgeType:     "beeper-matrix-proxy",
 		DefaultPort:          29320,
-		DefaultCommandPrefix: "!vcvm",
+		DefaultCommandPrefix: "!matrixproxy",
 	}
 }
 
@@ -87,7 +87,7 @@ func (c *MyConnector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
 		ID:          LoginFlowIDUsernamePassword,
 		Name:        "Username & Password",
-		Description: "Log in to the VCVM Matrix homeserver.",
+		Description: "Log in to the remote Matrix homeserver.",
 	}}
 }
 
@@ -105,7 +105,7 @@ func (c *MyConnector) CreateLogin(ctx context.Context, user *bridgev2.User, flow
 
 // GetConfig implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetConfig() (string, any, configupgrade.Upgrader) {
-	return "vcvm-matrix.yaml", nil, nil
+	return "beeper-matrix-proxy.yaml", nil, nil
 }
 
 // GetBridgeInfoVersion implements bridgev2.NetworkConnector.
@@ -165,7 +165,7 @@ func localHomeserverURL() string {
 	if value := os.Getenv("LOCAL_MATRIX_HS"); value != "" {
 		return value
 	}
-	return "https://vcvm.tail6a40cd.ts.net:3443"
+	return "https://matrix.example.com"
 }
 
 func newLocalMatrixClient(userID, accessToken string) (*mautrix.Client, error) {

@@ -3,7 +3,7 @@ package main
 import (
 	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 
-	"github.com/dvcrn/matrix-bridge-quickstart/connector"
+	"github.com/Martin-Hausleitner/beeper-matrix-proxy/connector"
 )
 
 var (

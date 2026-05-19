@@ -70,7 +70,7 @@ func (nc *MyNetworkClient) reuploadMediaToBeeper(ctx context.Context, intent bri
 	uri, enc := mediaSource(content)
 	data, err := nc.downloadFromLocalMatrix(ctx, uri, enc)
 	if err != nil {
-		return fmt.Errorf("download VCVM Matrix media: %w", err)
+		return fmt.Errorf("download remote Matrix media: %w", err)
 	}
 	fileName, mimeType := mediaNameAndType(content)
 	uploaded, uploadedFile, err := intent.UploadMedia(ctx, "", data, fileName, mimeType)
@@ -80,7 +80,7 @@ func (nc *MyNetworkClient) reuploadMediaToBeeper(ctx context.Context, intent bri
 	content.URL = uploaded
 	content.File = uploadedFile
 	nc.log.Info().
-		Str("direction", "vcvm_to_beeper").
+		Str("direction", "matrix_to_beeper").
 		Str("msgtype", string(content.MsgType)).
 		Str("filename", fileName).
 		Str("mime_type", mimeType).
@@ -119,7 +119,7 @@ func (nc *MyNetworkClient) reuploadMediaToLocalMatrix(ctx context.Context, conte
 		return fmt.Errorf("download Beeper media: %w", err)
 	}
 	if maxSize := nc.getLocalMaxUploadSize(); maxSize > 0 && int64(len(data)) > maxSize {
-		return fmt.Errorf("upload media to VCVM Matrix: file too large (%.2f MB > %.2f MB)", float64(len(data))/1000/1000, float64(maxSize)/1000/1000)
+		return fmt.Errorf("upload media to remote Matrix: file too large (%.2f MB > %.2f MB)", float64(len(data))/1000/1000, float64(maxSize)/1000/1000)
 	}
 	fileName, mimeType := mediaNameAndType(content)
 	resp, err := nc.mx.UploadMedia(ctx, mautrix.ReqUploadMedia{
@@ -128,12 +128,12 @@ func (nc *MyNetworkClient) reuploadMediaToLocalMatrix(ctx context.Context, conte
 		FileName:     fileName,
 	})
 	if err != nil {
-		return fmt.Errorf("upload media to VCVM Matrix: %w", err)
+		return fmt.Errorf("upload media to remote Matrix: %w", err)
 	}
 	content.URL = resp.ContentURI.CUString()
 	content.File = nil
 	nc.log.Info().
-		Str("direction", "beeper_to_vcvm").
+		Str("direction", "beeper_to_matrix").
 		Str("msgtype", string(content.MsgType)).
 		Str("filename", fileName).
 		Str("mime_type", mimeType).

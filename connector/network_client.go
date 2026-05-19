@@ -43,12 +43,12 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	defer nc.connectMu.Unlock()
 	if nc.mx == nil {
 		nc.loggedIn = false
-		nc.log.Error().Msg("VCVM Matrix client missing")
+		nc.log.Error().Msg("Remote Matrix client missing")
 		return
 	}
 	if nc.cancel != nil {
 		nc.loggedIn = true
-		nc.log.Debug().Msg("VCVM Matrix client already connected")
+		nc.log.Debug().Msg("Remote Matrix client already connected")
 		return
 	}
 	nc.loggedIn = true
@@ -95,10 +95,10 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			nc.login.BridgeState.Send(status.BridgeState{
 				StateEvent: status.StateTransientDisconnect,
 				RemoteID:   nc.login.ID,
-				Error:      status.BridgeStateErrorCode("VCVM_MATRIX_SYNC_STOPPED"),
+				Error:      status.BridgeStateErrorCode("REMOTE_MATRIX_SYNC_STOPPED"),
 				Reason:     err.Error(),
 			})
-			nc.log.Err(err).Msg("VCVM Matrix sync stopped")
+			nc.log.Err(err).Msg("Remote Matrix sync stopped")
 		}
 	}()
 }
@@ -106,7 +106,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 func (nc *MyNetworkClient) refreshLocalMediaConfig(ctx context.Context) {
 	cfg, err := nc.mx.GetMediaConfig(ctx)
 	if err != nil {
-		nc.log.Warn().Err(err).Msg("Failed to fetch VCVM Matrix media config")
+		nc.log.Warn().Err(err).Msg("Failed to fetch remote Matrix media config")
 		return
 	}
 	if cfg == nil || cfg.UploadSize <= 0 {
@@ -117,7 +117,7 @@ func (nc *MyNetworkClient) refreshLocalMediaConfig(ctx context.Context) {
 	nc.mediaMu.Unlock()
 	nc.log.Info().
 		Int64("max_upload_size", cfg.UploadSize).
-		Msg("Fetched VCVM Matrix media config")
+		Msg("Fetched remote Matrix media config")
 }
 
 func (nc *MyNetworkClient) getLocalMaxUploadSize() int64 {
@@ -191,7 +191,7 @@ func (nc *MyNetworkClient) Disconnect() {
 	nc.login.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateLoggedOut,
 		RemoteID:   nc.login.ID,
-		Reason:     "Disconnected from VCVM Matrix bridge",
+		Reason:     "Disconnected from remote Matrix bridge",
 	})
 }
 
@@ -240,7 +240,7 @@ func (nc *MyNetworkClient) IsLoggedIn() bool {
 func (nc *MyNetworkClient) syncRooms(ctx context.Context) {
 	rooms, err := nc.mx.JoinedRooms(ctx)
 	if err != nil {
-		nc.log.Err(err).Msg("Failed to fetch joined VCVM Matrix rooms")
+		nc.log.Err(err).Msg("Failed to fetch joined remote Matrix rooms")
 		return
 	}
 	for _, roomID := range rooms.JoinedRooms {

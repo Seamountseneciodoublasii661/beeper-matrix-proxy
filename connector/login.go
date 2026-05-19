@@ -37,7 +37,7 @@ func (sl *SimpleLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeUserInput,
 		StepID:       LoginStepIDUsernamePassword,
-		Instructions: "Enter your username and password for the VCVM Matrix homeserver.",
+		Instructions: "Enter your username and password for the remote Matrix homeserver.",
 		UserInputParams: &bridgev2.LoginUserInputParams{
 			Fields: []bridgev2.LoginInputDataField{
 				{
@@ -78,12 +78,12 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 			User: username,
 		},
 		Password:                 password,
-		InitialDeviceDisplayName: "Beeper VCVM Matrix bridge",
+		InitialDeviceDisplayName: "Beeper Matrix Proxy",
 		StoreCredentials:         true,
 		StoreHomeserverURL:       true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to log in to VCVM Matrix: %w", err)
+		return nil, fmt.Errorf("failed to log in to remote Matrix: %w", err)
 	}
 
 	namespace := uuid.MustParse("f7a4f3e3-5d5a-4a9e-8d8a-3b0b9e8a1b2c")

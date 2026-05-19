@@ -87,8 +87,8 @@ func TestRewriteContentRelationsForLocalMatrixUsesRemoteIDs(t *testing.T) {
 			EventID:   id.EventID("$beeper-thread:beeper.local"),
 		},
 	}
-	replyTo := &database.Message{ID: networkid.MessageID("$remote-reply:100.120.120.120")}
-	threadRoot := &database.Message{ID: networkid.MessageID("$remote-thread:100.120.120.120")}
+	replyTo := &database.Message{ID: networkid.MessageID("$remote-reply:matrix.example.com")}
+	threadRoot := &database.Message{ID: networkid.MessageID("$remote-thread:matrix.example.com")}
 
 	rewriteContentRelationsForLocalMatrix(content, replyTo, threadRoot)
 

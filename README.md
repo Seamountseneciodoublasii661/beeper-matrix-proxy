@@ -1,167 +1,190 @@
-# Minimal Mautrix-Go Bridge: Quickstart Template 🚀
+# beeper-matrix-proxy
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/mautrix/go.svg)](https://pkg.go.dev/github.com/mautrix/go)
+`beeper-matrix-proxy` is an experimental Matrix-to-Beeper custom bridge built on
+[`mautrix-go` bridgev2](https://pkg.go.dev/maunium.net/go/mautrix/bridgev2).
 
-Welcome! This project provides a minimal, bare-bones template for creating a [Matrix](https://matrix.org/) bridge using the powerful [mautrix-go](https://github.com/mautrix/go) library, specifically leveraging its modern `bridgev2` framework.
+It treats a normal Matrix homeserver as the "remote network" and exposes its
+rooms inside Beeper through Beeper's self-hosted bridge flow (`bbctl`). The goal
+is to make private Matrix rooms usable from the stock Beeper Desktop client
+without patching Beeper's app bundle.
 
-**What is a Matrix Bridge?**
+## Why This Exists
 
-A Matrix bridge connects the decentralized, open Matrix communication network to other, often proprietary, chat networks (like WhatsApp, Telegram, Discord, etc.). It acts as a translator, allowing users on Matrix to communicate with users on the other network, and vice-versa.
+Beeper Cloud does not federate with arbitrary Matrix homeservers. A private
+Synapse, Dendrite, or Conduit server therefore cannot simply join Beeper by
+federation. This project uses the supported Application Service bridge path
+instead:
 
-Building a bridge involves a lot of standard setup: handling Matrix connections, managing user logins, storing data, processing configuration, etc. This template handles that common boilerplate for you, letting you jump straight into the interesting part: connecting to _your_ specific target network.
-
-## ⚙️ Project Structure
-
-Here's a breakdown of the key files:
-
-- **`main.go`**:
-  - The main entry point. Handles command-line flags, configuration, logging, and the bridge's start/stop lifecycle using `mxmain`.
-  - You usually **won't need to modify this** much initially.
-
-- **`connector/my_connector.go`**:
-  - **⭐ This is the main implementation of the network side of the bridge! ⭐**
-  - Contains the `MyConnector` struct, which implements the `bridgev2.NetworkConnector` interface.
-  - This file defines the bridge's core properties (`GetName`, `GetCapabilities`), handles loading user sessions (`LoadUserLogin`), and initiates the login process (`GetLoginFlows`, `CreateLogin`).
-  - It also contains the main logic for handling events _from_ Matrix (`HandleMatrixMessage`, etc. - though these might be delegated).
-
-- **`connector/login.go`**:
-  - Contains the logic for specific login flows (e.g., `SimpleLogin` for username/password).
-  - Implements `bridgev2.LoginProcess` interfaces to handle steps like asking for user input (`Start`, `SubmitUserInput`) and finalizing login.
-
-- **`connector/network_client.go`** (Optional but Recommended):
-  - This file typically holds the client logic for interacting with the _remote network_ for a _specific logged-in user_.
-  - You'd create a struct (e.g., `MyNetworkClient`) that implements `bridgev2.NetworkClient`.
-  - Methods here would handle sending messages _to_ the remote network, fetching user/room info, handling typing notifications, etc., based on Matrix events forwarded from `connector/my_connector.go`.
-  - The `LoadUserLogin` method in `connector/my_connector.go` would instantiate this client.
-
----
-
-## 🚀 Getting Started: Building Your Bridge
-
-Follow these steps to get your basic bridge running:
-
-1.  **Clone/Copy Template:**
-    - Get a local copy of this template directory (e.g., `git clone ...` or download ZIP).
-
-2.  **Implement Your Connector (`connector/my_connector.go`):**
-    - Open `connector/my_connector.go`. This is where you'll spend most of your time.
-    - **Goal:** Replace the placeholder logic with real code to interact with your target network.
-    - Start by filling in:
-      - `GetName()`: Provide accurate details about your bridge and the network it connects to.
-      - `GetCapabilities()`: Define what features your bridge supports (e.g., message formatting, read receipts).
-      - `GetLoginFlows()` / `CreateLogin()`: Implement the actual login mechanism for your target network. The current example is just a placeholder!
-      - `LoadUserLogin()`: This is crucial. When a user logs in, this function should establish their _persistent_ connection to the remote network.
-      - `Start()` / `Stop()`: Add any global setup/teardown logic for your network connection.
-    - **Configuration:** If your network needs API keys or other settings, implement `GetConfig()` to load them from a file (like `simple-config.yaml`) and create that YAML file.
-
-3.  **Historic messages / chat history:**
-    - This is called _backfilling_ and happens in `network_client_backfill.go`
-    - When the user opens a room, this function will get called. Use this hook to backfill messages
-    - For this to get called, you need to set `backfill` to true in config.yaml
-
-4.  **Generate Registration File:**
-    - Open your terminal in the project directory.
-    - Run: `go run . -g -c config.yaml -r registration.yaml`
-    - This creates the initial `registration.yaml`. **Keep this file safe!**
-
-5.  **Configure the Bridge (`config.yaml`):**
-    - Edit `config.yaml` (generate it with `go run . --generate-example-config`).
-    - Set `homeserver.address` (e.g., `https://matrix.example.com`) and `homeserver.domain` (e.g., `matrix.example.com`).
-    - **Crucial:** Copy the `id`, `as_token`, `hs_token` from the _generated_ `registration.yaml` into the `appservice` section of `config.yaml`. Also, copy `bot.username` and potentially adjust `username_template`.
-    - Review and adjust `database` (default is `./simple-bridge.db`), `logging`, and `permissions` as needed.
-    - If you created a network-specific config file (e.g., `simple-config.yaml`), configure its settings now.
-
-6.  **Configure Your Homeserver:**
-    - Copy the generated `registration.yaml` file to your Matrix homeserver's configuration directory.
-      - For Synapse, this is often `/etc/synapse/conf.d/` or similar. Check your homeserver's documentation.
-    - **Restart your homeserver** software (e.g., `systemctl restart synapse`). This makes it load the registration file and know about your bridge.
-
-7.  **Build the Bridge:**
-    - In the project directory, run: `go build`
-    - This creates an executable binary (e.g., `minibridge`).
-
-8.  **Run the Bridge:**
-    - Execute the binary, pointing it to your config files:
-      ```bash
-      go run . -c config.yaml -r registration.yaml
-      ```
-    - Check the terminal output for logs and potential errors.
-
-## 🧭 CLI Help & Config Generation
-
-View available flags:
-
-```bash
-go run . --help
+```text
+Private Matrix homeserver <-> beeper-matrix-proxy <-> Beeper bridgev2 / Hungryserv <-> Beeper Desktop
 ```
 
-Generate an example config file at the path you pass to `-c`/`--config`:
+The bridge focuses on the Beeper Desktop data contract:
+
+- room capabilities via `com.beeper.room_features`
+- stable remote/local event ID mapping
+- Matrix media reupload in both directions
+- history backfill with dedupe-aware IDs
+- Beeper-friendly payloads for edits, replies, polls, GIFs, and voice messages
+
+## Current Feature Matrix
+
+| Feature | Status | Direction | Notes |
+|---|---:|---|---|
+| Text messages | Supported | Matrix -> Beeper, Beeper -> Matrix | Basic `m.room.message` text round-trips. |
+| Fast message bursts | Supported | Matrix -> Beeper | Remote `/sync` timeline limit is raised to avoid dropping bursts. |
+| Room discovery | Supported | Matrix -> Beeper | Joined remote Matrix rooms are synced as Beeper portal rooms. |
+| Room names/topics | Supported | Matrix -> Beeper | Pulled from Matrix room state during chat sync. |
+| Replies | Supported | Both | Beeper-local event IDs are remapped to remote Matrix event IDs before forwarding. |
+| Threads | Partial | Both | Thread root IDs are remapped; deep client behavior still needs broader UI testing. |
+| Reactions | Partial | Both | Add/remove paths exist with event ID remapping; more cross-client tests are needed. |
+| Edits | Supported | Both | Matrix edit fallback prefixes such as `* ` are stripped before Beeper rendering. |
+| Redactions / deletes | Partial | Both | Live message deletion paths exist; historical cleanup needs explicit redaction tooling. |
+| Images | Supported | Both | Media is downloaded and reuploaded between homeservers. |
+| Files | Supported | Both | Same media path as images; max upload size is advertised conservatively. |
+| Videos | Partial | Both | Standard media works; very large files depend on proxy and homeserver limits. |
+| GIF rendering | Partial | Both | GIF metadata flags are preserved/normalized where possible; transcoding is not implemented yet. |
+| Voice messages | Partial | Both | Voice capability/payload support exists; waveform and codec coverage needs more device testing. |
+| Polls | Partial | Matrix -> Beeper | Poll start payloads are normalized with MSC1767 text fallbacks; vote/end flows need more E2E tests. |
+| Backfill / history | Partial | Matrix -> Beeper | Backfill APIs are implemented; old placeholder cleanup is deliberately not automatic. |
+| Avatars | Partial | Matrix -> Beeper | Downloadable avatars work; stale remote media still depends on better direct-media handling. |
+| Typing notifications | Not implemented | Both | Not wired yet. |
+| Read receipts | Not implemented | Both | Not wired yet. |
+| Native audio/video calls | Not supported | Both | Beeper custom bridges should expose calls as notices or links, not fake native call UI. |
+| End-to-end encryption | Not a goal yet | Both | The bridge handles decrypted bridge traffic; production E2EE needs a separate design pass. |
+
+## What Was Verified
+
+The current implementation has regression tests for the most important bridge
+contract fixes:
+
+- Matrix sync burst preservation
+- Beeper reply/thread relation remapping
+- edit fallback cleanup
+- poll payload text fallback normalization
+- media URL handling and upload limit behavior
+
+Run them with:
+
+```bash
+CGO_CFLAGS="-I/opt/homebrew/opt/libolm/include" \
+CGO_LDFLAGS="-L/opt/homebrew/opt/libolm/lib -lolm" \
+go test ./...
+```
+
+## Setup
+
+### 1. Install requirements
+
+- Go 1.25+
+- `libolm` for Matrix crypto support
+- Beeper bridge manager (`bbctl`)
+- A Beeper account that can run self-hosted bridges
+- A Matrix account on the remote homeserver
+
+On macOS:
+
+```bash
+brew install libolm
+```
+
+### 2. Build
+
+```bash
+CGO_CFLAGS="-I/opt/homebrew/opt/libolm/include" \
+CGO_LDFLAGS="-L/opt/homebrew/opt/libolm/lib -lolm" \
+go build -o beeper-matrix-proxy
+```
+
+### 3. Configure the remote Matrix homeserver
+
+Set the remote homeserver URL with `LOCAL_MATRIX_HS`:
+
+```bash
+export LOCAL_MATRIX_HS="https://matrix.example.com"
+```
+
+Optional environment variables:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `LOCAL_MATRIX_HS` | `https://matrix.example.com` | Remote Matrix homeserver used for user login and sync. |
+| `LOCAL_MATRIX_INSECURE_TLS` | enabled unless set to `0` | Allows self-signed or private TLS during local development. |
+| `LOCAL_MATRIX_INITIAL_BACKFILL_LIMIT` | `0` | Initial history import limit. |
+| `LOCAL_MATRIX_MAX_UPLOAD_SIZE` | remote media config | Caps the size advertised to Beeper. Useful when a proxy returns HTTP 413 before Synapse does. |
+
+### 4. Generate bridge config
 
 ```bash
 go run . --generate-example-config -c config.yaml
+go run . -g -c config.yaml -r registration.yaml
 ```
 
-🎉 **Congratulations!** You have a running (though perhaps very basic) Matrix bridge.
+Fill in the Beeper bridge-manager config as usual for a bridgev2 custom bridge.
+Do not commit `config.yaml`, `registration.yaml`, databases, logs, or binaries.
+They are ignored by `.gitignore`.
 
----
+### 5. Run with bbctl
 
-## 🧩 Common Bridge Patterns
-
-### 1) How do I create rooms from remote rooms?
-
-Use the portal + `simplevent.ChatResync` flow. When you discover a new remote chat, create or load the portal, store metadata, then queue a resync with `CreatePortal = true`. The framework will call `GetChatInfo` to build the room state and create the Matrix room. Suggested locations: `connector/handle_remote.go` (queue helper), `connector/handle_matrix.go` (`GetChatInfo`), and `connector/types.go` (portal metadata).
-
-```go
-portalKey := networkid.PortalKey{ID: networkid.PortalID(remoteRoomID)}
-portal, _ := bridge.GetPortalByKey(ctx, portalKey)
-portal.OtherUserID = networkid.UserID(remoteUserID)
-_ = portal.Update(ctx)
-
-bridge.QueueRemoteEvent(login, &simplevent.ChatResync{
-	EventMeta: simplevent.EventMeta{
-		Type:         bridgev2.RemoteEventChatResync,
-		PortalKey:    portalKey,
-		CreatePortal: true,
-	},
-	ChatInfo: nil, // GetChatInfo will be called by the framework
-})
+```bash
+export BEEPER_MATRIX_PROXY_DIR="$PWD"
+export BEEPER_MATRIX_PROXY_BINARY="$PWD/beeper-matrix-proxy"
+./run-bridge.sh
 ```
 
-### 2) How do I send a message into a Matrix room?
+Then start the login flow from Beeper and authenticate with the remote Matrix
+homeserver username/password.
 
-Queue a `simplevent.Message` (remote → Matrix). The framework converts and inserts it. See `connector/handle_remote.go` (`QueueRemoteMessage`).
+## Design Notes
 
-```go
-nc.QueueRemoteMessage(ctx, msg.Portal.ID, "Hi there too")
-```
+### Beeper room features
 
-### 3) How do I backfill messages?
+Beeper Desktop is mostly data-driven. It enables and disables compose actions
+from Matrix room state, especially `com.beeper.room_features`. This bridge sets
+capabilities in code and bumps the bridge info version when the feature contract
+changes, so existing rooms can receive updated state.
 
-Implement `FetchMessages` (BackfillingNetworkAPI). When backfill is enabled, the framework will call it and insert the returned messages. See `connector/network_client_backfill.go`.
+### Event ID mapping
 
-```go
-func (nc *MyNetworkClient) FetchMessages(ctx context.Context, p bridgev2.FetchMessagesParams) (*bridgev2.FetchMessagesResponse, error) {
-	// build []*bridgev2.BackfillMessage and return
-}
-```
+Beeper and the remote Matrix homeserver have different event IDs for the same
+logical message. Replies, thread roots, reactions, edits, and deletes must be
+rewritten through the bridge database before crossing sides. Otherwise Beeper
+IDs such as `$event:beeper.local` leak into the remote homeserver where they
+cannot resolve.
 
-### 4) How do I react on a Matrix message?
+### Media
 
-Implement `HandleMatrixMessage` and take action for Matrix → remote, or queue a remote reply. See `connector/handle_matrix.go`.
+Media is reuploaded instead of blindly forwarding `mxc://` URIs. That keeps
+Beeper and the remote Matrix server from trying to dereference unknown media
+repositories. The current implementation intentionally advertises conservative
+upload limits when `LOCAL_MATRIX_MAX_UPLOAD_SIZE` is set, because reverse
+proxies often reject large uploads before Synapse can return a clean Matrix
+error.
 
-```go
-func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	nc.QueueRemoteMessage(ctx, msg.Portal.ID, "Hi there too")
-	return &bridgev2.MatrixMessageResponse{}, nil
-}
-```
+### Calls
 
-## ⏭️ Next Steps
+Native audio/video calls are not currently exposed as a supported capability.
+For custom Beeper bridges, the safe behavior is to convert incoming call events
+into `m.notice` messages with a join link. That fallback is planned but not yet
+implemented.
 
-- **Flesh out `connector/my_connector.go`:** Implement message handling, user/room synchronization, presence, typing notifications, etc.
-- **Consult `mautrix-go` Docs:** Explore the `bridgev2` package documentation for detailed information on interfaces and helpers: [pkg.go.dev/maunium.net/go/mautrix/bridgev2](https://pkg.go.dev/maunium.net/go/mautrix/bridgev2)
-- **Study Other Bridges:** Look at the source code of other `mautrix-go` based bridges (like `mautrix-whatsapp`, `mautrix-telegram`) for inspiration and examples.
-- **Testing:** Implement unit and integration tests for your connector logic.
-- **Refine Configuration:** Make your bridge more robust by handling configuration validation and updates.
+## Roadmap
 
-Good luck with your bridge development!
+- Direct media proxy support for stale avatars and older attachments
+- Call notices with Element Call / Matrix room links
+- Better GIF handling, including optional GIF-to-MP4 transcoding
+- Voice waveform generation fallback for clients that do not provide one
+- Full poll vote/end round-trip tests
+- Safe dry-run and apply tooling for redacting old backfill placeholders
+- Typing notifications and read receipts
+
+## Safety
+
+This project is young and bridge code can create real Matrix events. Test in a
+small room first, keep backups of bridge databases, and use dry-runs for any
+history cleanup or redaction tooling.
+
+## License
+
+No license has been selected yet. Until a license is added, treat this repository
+as source-available rather than open-source.

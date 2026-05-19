@@ -1,4 +1,4 @@
-module github.com/dvcrn/matrix-bridge-quickstart
+module github.com/Martin-Hausleitner/beeper-matrix-proxy
 
 go 1.25.0
 

@@ -131,7 +131,7 @@ bridge:
   permissions:
     "*": relay
     "beeper.local": user
-    "@davicorn:beeper.com": admin
+    "@admin:beeper.com": admin
 
 # Config for the bridge's database.
 database:
@@ -156,7 +156,7 @@ homeserver:
   # The address that this appservice can use to connect to the homeserver.
   # Local addresses without HTTPS are generally recommended when the bridge is running on the same machine,
   # but https also works if they run on different machines.
-  address: https://matrix.beeper.com/_hungryserv/davicorn
+  address: https://matrix.beeper.com/_hungryserv/your-beeper-user
   # The domain of the homeserver (also known as server_name, used for MXIDs, etc).
   domain: beeper.local
 
@@ -258,7 +258,7 @@ analytics:
 provisioning:
   # Shared secret for authentication. If set to "generate" or null, a random secret will be generated,
   # or if set to "disable", the provisioning API will be disabled. Must be at least 16 characters.
-  shared_secret: j4d96WeyPpaFMNWVynfpfimWHa1C9hNo0bAoFWCTKpiclZsMOL1RBKIeG5MfXRs8
+  shared_secret: generate
   # Whether to allow provisioning API requests to be authed using Matrix access tokens.
   # This follows the same rules as double puppeting to determine which server to contact to check the token,
   # which means that by default, it only works for users on the same server as the bridge.

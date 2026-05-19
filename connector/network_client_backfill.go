@@ -18,7 +18,7 @@ var _ bridgev2.BackfillingNetworkAPI = (*MyNetworkClient)(nil)
 // This wil get called when the user opens a room and wants to load historical messages
 func (nc *MyNetworkClient) FetchMessages(ctx context.Context, fetchParams bridgev2.FetchMessagesParams) (*bridgev2.FetchMessagesResponse, error) {
 	if nc.mx == nil {
-		return nil, fmt.Errorf("VCVM Matrix client is not connected")
+		return nil, fmt.Errorf("remote Matrix client is not connected")
 	}
 	roomID := id.RoomID(fetchParams.Portal.ID)
 	limit := fetchParams.Count

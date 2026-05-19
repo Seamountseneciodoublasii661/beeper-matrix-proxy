@@ -22,7 +22,7 @@ var (
 
 func (nc *MyNetworkClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.MatrixEdit) error {
 	if nc.mx == nil {
-		return fmt.Errorf("VCVM Matrix client is not connected")
+		return fmt.Errorf("remote Matrix client is not connected")
 	}
 	content := cloneMessageContent(msg.Content)
 	if content == nil {
@@ -44,7 +44,7 @@ func (nc *MyNetworkClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.M
 
 func (nc *MyNetworkClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
 	if nc.mx == nil {
-		return fmt.Errorf("VCVM Matrix client is not connected")
+		return fmt.Errorf("remote Matrix client is not connected")
 	}
 	if msg.TargetMessage == nil || msg.TargetMessage.ID == "" {
 		return fmt.Errorf("redaction target missing")
@@ -59,7 +59,7 @@ func (nc *MyNetworkClient) HandleMatrixMessageRemove(ctx context.Context, msg *b
 
 func (nc *MyNetworkClient) HandleMatrixPollStart(ctx context.Context, msg *bridgev2.MatrixPollStart) (*bridgev2.MatrixMessageResponse, error) {
 	if nc.mx == nil {
-		return nil, fmt.Errorf("VCVM Matrix client is not connected")
+		return nil, fmt.Errorf("remote Matrix client is not connected")
 	}
 	content := clonePollStartContent(msg.Content)
 	resp, err := nc.mx.SendMessageEvent(ctx, id.RoomID(msg.Portal.ID), event.EventUnstablePollStart, content)
@@ -78,7 +78,7 @@ func (nc *MyNetworkClient) HandleMatrixPollStart(ctx context.Context, msg *bridg
 
 func (nc *MyNetworkClient) HandleMatrixPollVote(ctx context.Context, msg *bridgev2.MatrixPollVote) (*bridgev2.MatrixMessageResponse, error) {
 	if nc.mx == nil {
-		return nil, fmt.Errorf("VCVM Matrix client is not connected")
+		return nil, fmt.Errorf("remote Matrix client is not connected")
 	}
 	content := clonePollResponseContent(msg.Content)
 	if msg.VoteTo != nil && content.RelatesTo.GetReferenceID() == "" {
@@ -112,7 +112,7 @@ func (nc *MyNetworkClient) PreHandleMatrixReaction(ctx context.Context, msg *bri
 
 func (nc *MyNetworkClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (*database.Reaction, error) {
 	if nc.mx == nil {
-		return nil, fmt.Errorf("VCVM Matrix client is not connected")
+		return nil, fmt.Errorf("remote Matrix client is not connected")
 	}
 	if msg.TargetMessage == nil || msg.TargetMessage.ID == "" {
 		return nil, fmt.Errorf("reaction target missing")
@@ -138,7 +138,7 @@ func (nc *MyNetworkClient) HandleMatrixReaction(ctx context.Context, msg *bridge
 
 func (nc *MyNetworkClient) HandleMatrixReactionRemove(ctx context.Context, msg *bridgev2.MatrixReactionRemove) error {
 	if nc.mx == nil {
-		return fmt.Errorf("VCVM Matrix client is not connected")
+		return fmt.Errorf("remote Matrix client is not connected")
 	}
 	if msg.TargetReaction == nil {
 		return fmt.Errorf("reaction target missing")
@@ -148,7 +148,7 @@ func (nc *MyNetworkClient) HandleMatrixReactionRemove(ctx context.Context, msg *
 		remoteEventID = id.EventID(meta.RemoteEventID)
 	}
 	if remoteEventID == "" {
-		nc.log.Warn().Msg("Reaction remove has no stored VCVM Matrix event ID")
+		nc.log.Warn().Msg("Reaction remove has no stored remote Matrix event ID")
 		return nil
 	}
 	resp, err := nc.mx.RedactEvent(ctx, id.RoomID(msg.Portal.ID), remoteEventID)

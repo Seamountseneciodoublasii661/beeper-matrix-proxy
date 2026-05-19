@@ -25,7 +25,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	log.Info().Msg("HandleMatrixMessage called")
 
 	if nc.mx == nil {
-		return nil, fmt.Errorf("VCVM Matrix client is not connected")
+		return nil, fmt.Errorf("remote Matrix client is not connected")
 	}
 
 	roomID := id.RoomID(msg.Portal.ID)
@@ -91,7 +91,7 @@ func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghos
 
 func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	if nc.mx == nil {
-		return nil, fmt.Errorf("VCVM Matrix client is not connected")
+		return nil, fmt.Errorf("remote Matrix client is not connected")
 	}
 	return nc.buildChatInfo(ctx, id.RoomID(portal.ID)), nil
 }
