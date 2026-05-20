@@ -255,6 +255,62 @@ func TestNormalizeMediaContentForBeeperAddsVoiceFallback(t *testing.T) {
 	}
 }
 
+func TestNormalizeMediaContentForBeeperRecursesIntoEditsAndGallery(t *testing.T) {
+	content := &event.MessageEventContent{
+		NewContent: &event.MessageEventContent{
+			MsgType: event.MsgImage,
+			Body:    "edited.gif",
+			Info:    &event.FileInfo{MimeType: "image/gif"},
+		},
+		BeeperGalleryImages: []*event.MessageEventContent{{
+			MsgType:      event.MsgAudio,
+			Body:         "gallery-voice.ogg",
+			Info:         &event.FileInfo{MimeType: "audio/ogg", Duration: 987},
+			MSC3245Voice: &event.MSC3245Voice{},
+		}},
+	}
+
+	normalizeMediaContentForBeeper(content)
+
+	if content.NewContent == nil || content.NewContent.Info == nil || !content.NewContent.Info.MauGIF {
+		t.Fatalf("expected nested edit GIF metadata to be normalized, got %#v", content.NewContent)
+	}
+	if got := content.NewContent.Info.Extra["fi.mau.autoplay"]; got != true {
+		t.Fatalf("expected nested GIF autoplay flag, got %#v", content.NewContent.Info.Extra)
+	}
+	gallery := content.BeeperGalleryImages[0]
+	if gallery.MSC1767Audio == nil {
+		t.Fatal("expected gallery voice fallback")
+	}
+	if gallery.MSC1767Audio.Duration != 987 {
+		t.Fatalf("expected gallery voice duration 987, got %d", gallery.MSC1767Audio.Duration)
+	}
+	if len(gallery.MSC1767Audio.Waveform) != fallbackWaveformSamples {
+		t.Fatalf("expected gallery voice waveform fallback, got %d samples", len(gallery.MSC1767Audio.Waveform))
+	}
+}
+
+func TestNormalizeVoiceInfoKeepsExistingWaveformAndDuration(t *testing.T) {
+	content := &event.MessageEventContent{
+		MsgType: event.MsgAudio,
+		Info:    &event.FileInfo{MimeType: "audio/ogg", Duration: 9999},
+		MSC3245Voice: &event.MSC3245Voice{},
+		MSC1767Audio: &event.MSC1767Audio{
+			Duration: 321,
+			Waveform: []int{1, 2, 3},
+		},
+	}
+
+	normalizeMediaContentForBeeper(content)
+
+	if content.MSC1767Audio.Duration != 321 {
+		t.Fatalf("expected existing duration to be preserved, got %d", content.MSC1767Audio.Duration)
+	}
+	if got := content.MSC1767Audio.Waveform; len(got) != 3 || got[0] != 1 || got[2] != 3 {
+		t.Fatalf("expected existing waveform to be preserved, got %#v", got)
+	}
+}
+
 func TestGetLocalMaxUploadSizeUsesEnvironmentOverride(t *testing.T) {
 	t.Setenv("LOCAL_MATRIX_MAX_UPLOAD_SIZE", "12345")
 	nc := &MyNetworkClient{localMaxUploadSize: 98765}

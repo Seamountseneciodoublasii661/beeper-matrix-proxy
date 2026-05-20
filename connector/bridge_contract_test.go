@@ -245,6 +245,32 @@ func TestLoginSyncStorePersistsNextBatchAndFilterInMetadata(t *testing.T) {
 	}
 }
 
+func TestLoginMetadataSnapshotDoesNotExposeMutableReactionMap(t *testing.T) {
+	dbLogin := &database.UserLogin{Metadata: &LoginMetadata{
+		RemoteReactions: map[string]StoredRemoteReaction{
+			"$reaction:example": {
+				RoomID:        "!room:example",
+				TargetMessage: "$target:example",
+				Emoji:         "👍",
+			},
+		},
+	}}
+	login := &bridgev2.UserLogin{UserLogin: dbLogin}
+	store := newLoginMetadataStore(login)
+
+	snapshot := store.snapshot()
+	snapshot.RemoteReactions["$reaction:example"] = StoredRemoteReaction{Emoji: "changed"}
+	snapshot.RemoteReactions["$new:example"] = StoredRemoteReaction{Emoji: "new"}
+
+	meta := dbLogin.Metadata.(*LoginMetadata)
+	if got := meta.RemoteReactions["$reaction:example"].Emoji; got != "👍" {
+		t.Fatalf("expected original reaction metadata to be isolated, got %q", got)
+	}
+	if _, ok := meta.RemoteReactions["$new:example"]; ok {
+		t.Fatal("expected snapshot mutation not to add metadata to original login")
+	}
+}
+
 func TestPersistentRemoteReactionSurvivesMemoryMapMiss(t *testing.T) {
 	dbLogin := &database.UserLogin{Metadata: &LoginMetadata{}}
 	login := &bridgev2.UserLogin{UserLogin: dbLogin}
@@ -337,6 +363,38 @@ func TestRoomCapabilitiesExposeBoundedInteractiveFeatures(t *testing.T) {
 	}
 }
 
+func TestRoomCapabilitiesExposeCriticalBeeperMediaTypes(t *testing.T) {
+	t.Setenv("LOCAL_MATRIX_MAX_UPLOAD_SIZE", "123456")
+	features := (&MyNetworkClient{}).GetCapabilities(context.Background(), nil)
+
+	for msgType, mimeType := range map[event.CapabilityMsgType]string{
+		event.MsgImage:      "image/webp",
+		event.MsgVideo:      "video/webm",
+		event.MsgAudio:      "audio/webm",
+		event.MsgFile:       "*/*",
+		event.CapMsgGIF:     "video/mp4",
+		event.CapMsgVoice:   "audio/ogg",
+		event.CapMsgSticker: "image/webp",
+	} {
+		file := features.File[msgType]
+		if file == nil {
+			t.Fatalf("expected file capability for %s", msgType)
+		}
+		if file.MimeTypes[mimeType] != event.CapLevelFullySupported {
+			t.Fatalf("expected %s to fully support %s, got %#v", msgType, mimeType, file.MimeTypes)
+		}
+		if file.MaxSize != 123456 {
+			t.Fatalf("expected %s max size to follow advertised upload limit, got %d", msgType, file.MaxSize)
+		}
+	}
+	if features.DisappearingTimer != nil {
+		t.Fatalf("expected disappearing messages to stay unadvertised until implemented, got %#v", features.DisappearingTimer)
+	}
+	if features.DeleteForMe {
+		t.Fatal("expected delete-for-me to stay unadvertised until implemented")
+	}
+}
+
 func TestCleanEditContentUsesNewContentWithoutLegacyPrefix(t *testing.T) {
 	content := &event.MessageEventContent{
 		MsgType: event.MsgText,
@@ -360,6 +418,23 @@ func TestCleanEditContentUsesNewContentWithoutLegacyPrefix(t *testing.T) {
 	}
 	if cleaned.RelatesTo != nil {
 		t.Fatalf("expected relates_to to be removed, got %#v", cleaned.RelatesTo)
+	}
+}
+
+func TestCleanEditContentStripsFormattedBodyFallbackPrefix(t *testing.T) {
+	content := &event.MessageEventContent{
+		MsgType:       event.MsgText,
+		Body:          "* plain",
+		FormattedBody: "* <strong>plain</strong>",
+	}
+
+	cleaned := cleanEditContentForBeeper(content)
+
+	if cleaned.Body != "plain" {
+		t.Fatalf("expected plain body prefix to be stripped, got %q", cleaned.Body)
+	}
+	if cleaned.FormattedBody != "<strong>plain</strong>" {
+		t.Fatalf("expected formatted body prefix to be stripped, got %q", cleaned.FormattedBody)
 	}
 }
 
@@ -392,6 +467,38 @@ func TestNormalizePollStartRawPreservesMSC1767Text(t *testing.T) {
 	}
 	if body := rawEventFallbackBody(event.EventUnstablePollStart, raw); body != "[Poll] Frage?" {
 		t.Fatalf("expected poll fallback body, got %q", body)
+	}
+}
+
+func TestNormalizePollStartRawExtractsMSC1767MessageFallback(t *testing.T) {
+	raw := map[string]any{
+		"org.matrix.msc3381.poll.start": map[string]any{
+			"question": map[string]any{
+				"org.matrix.msc1767.message": []any{
+					map[string]any{"body": "Nested question?"},
+				},
+			},
+			"answers": []map[string]any{
+				{
+					"id": "nested",
+					"org.matrix.msc1767.message": []any{
+						map[string]any{"body": "Nested answer"},
+					},
+				},
+			},
+		},
+	}
+
+	normalizePollStartRaw(raw)
+
+	start := raw["org.matrix.msc3381.poll.start"].(map[string]any)
+	question := start["question"].(map[string]any)
+	if got := question["org.matrix.msc1767.text"]; got != "Nested question?" {
+		t.Fatalf("expected nested question fallback, got %#v", got)
+	}
+	answers := start["answers"].([]map[string]any)
+	if got := answers[0]["org.matrix.msc1767.text"]; got != "Nested answer" {
+		t.Fatalf("expected nested answer fallback, got %#v", got)
 	}
 }
 

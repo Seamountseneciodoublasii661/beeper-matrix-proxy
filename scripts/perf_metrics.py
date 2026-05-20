@@ -139,6 +139,29 @@ def load_json(path: str) -> object:
         return json.load(f)
 
 
+def merge_gates(custom: dict[str, object] | None) -> dict[str, object]:
+    gates: dict[str, object] = {
+        "benchmarks": {
+            name: dict(values)
+            for name, values in DEFAULT_BENCH_GATES.items()
+        },
+        "synapse": dict(DEFAULT_SYNAPSE_GATES),
+    }
+    if not custom:
+        return gates
+    for section, values in custom.items():
+        if section in gates and isinstance(gates[section], dict) and isinstance(values, dict):
+            section_gates = gates[section]
+            for key, value in values.items():
+                if isinstance(section_gates.get(key), dict) and isinstance(value, dict):
+                    section_gates[key].update(value)
+                else:
+                    section_gates[key] = value
+        else:
+            gates[section] = values
+    return gates
+
+
 def check_bench_gates(summary: dict[str, object], gates: dict[str, object]) -> list[str]:
     failures: list[str] = []
     for name, gate in gates.items():
@@ -158,7 +181,10 @@ def check_synapse_gates(summary: dict[str, object], gates: dict[str, float]) -> 
     failures: list[str] = []
     max_burst_sync = gates.get("max_burst_sync_ms")
     if max_burst_sync is not None:
-        for item in summary.get("bursts", []):
+        bursts = summary.get("bursts", [])
+        if not bursts:
+            failures.append("missing burst E2E measurements")
+        for item in bursts:
             sync_ms = item.get("sync_ms") if isinstance(item, dict) else None
             if isinstance(sync_ms, (int, float)) and sync_ms > max_burst_sync:
                 failures.append(f"burst sync_ms={sync_ms:.3f} exceeds {max_burst_sync}")
@@ -166,6 +192,8 @@ def check_synapse_gates(summary: dict[str, object], gates: dict[str, float]) -> 
                 failures.append(f"burst delivered {item.get('delivered')}/{item.get('expected')}")
     max_mixed_sync = gates.get("max_mixed_modality_sync_ms")
     mixed = summary.get("mixed_modality")
+    if max_mixed_sync is not None and not isinstance(mixed, dict):
+        failures.append("missing mixed modality E2E measurement")
     if max_mixed_sync is not None and isinstance(mixed, dict):
         sync_ms = mixed.get("sync_ms")
         if isinstance(sync_ms, (int, float)) and sync_ms > max_mixed_sync:
@@ -174,14 +202,10 @@ def check_synapse_gates(summary: dict[str, object], gates: dict[str, float]) -> 
 
 
 def check_gates(bench_summary_path: str, synapse_summary_path: str | None, gates_path: str | None) -> int:
-    gates = {
-        "benchmarks": DEFAULT_BENCH_GATES,
-        "synapse": DEFAULT_SYNAPSE_GATES,
-    }
+    custom = None
     if gates_path:
         custom = load_json(gates_path)
-        if isinstance(custom, dict):
-            gates.update(custom)
+    gates = merge_gates(custom if isinstance(custom, dict) else None)
 
     failures = check_bench_gates(load_json(bench_summary_path), gates.get("benchmarks", {}))
     if synapse_summary_path and os.path.exists(synapse_summary_path):

@@ -29,6 +29,11 @@ public `main` branch.
 - GitHub Actions upgraded to Node 24-compatible action versions to avoid the
   2026 Node 20 runner deprecation (`checkout@v5`, `setup-go@v6`,
   `upload-artifact@v7`).
+- More regression tests for Beeper media normalization, capability contracts,
+  poll fallbacks, edit cleanup, metadata isolation, and performance gate parsing.
+- Performance gates now fail explicitly when requested Synapse E2E summaries are
+  missing burst or mixed-modality measurements, and custom gate files deep-merge
+  with default gates instead of replacing them wholesale.
 
 ### Performance
 
