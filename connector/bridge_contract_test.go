@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,12 @@ func TestLocalMatrixSyncFilterKeepsBursts(t *testing.T) {
 	}
 	if filter.Room.Ephemeral == nil || !containsEventType(filter.Room.Ephemeral.Types, event.EphemeralEventTyping) || !containsEventType(filter.Room.Ephemeral.Types, event.EphemeralEventReceipt) {
 		t.Fatalf("expected sync filter to include typing and receipt ephemeral events, got %#v", filter.Room.Ephemeral)
+	}
+	if filter.Room.State == nil || !filter.Room.State.LazyLoadMembers {
+		t.Fatalf("expected state filter to lazy-load members, got %#v", filter.Room.State)
+	}
+	if !sameEventTypes(filter.Room.State.Types, []event.Type{event.StateRoomName, event.StateRoomAvatar, event.StateTopic, event.StateMember}) {
+		t.Fatalf("expected state filter to only request bridge-relevant state, got %#v", filter.Room.State.Types)
 	}
 }
 
@@ -114,6 +121,20 @@ func TestRemoteReconnectDelayBacksOffWithCap(t *testing.T) {
 	}
 	if got := remoteReconnectDelay(20); got != remoteReconnectMaxDelay {
 		t.Fatalf("expected reconnect delay cap %s, got %s", remoteReconnectMaxDelay, got)
+	}
+}
+
+func TestSentEventCacheIsBounded(t *testing.T) {
+	const sentEventCacheLimit = 4096
+	nc := &MyNetworkClient{sentEvents: make(map[id.EventID]struct{})}
+	for i := 0; i < sentEventCacheLimit+500; i++ {
+		nc.markSentEvent(id.EventID("$event-" + strconv.Itoa(i) + ":example"))
+	}
+	if len(nc.sentEvents) > sentEventCacheLimit {
+		t.Fatalf("expected sent event cache to stay bounded at %d, got %d", sentEventCacheLimit, len(nc.sentEvents))
+	}
+	if !nc.consumeSentEvent(id.EventID("$event-4595:example")) {
+		t.Fatal("expected latest sent event to be consumable")
 	}
 }
 
@@ -376,4 +397,21 @@ func containsEventType(types []event.Type, needle event.Type) bool {
 		}
 	}
 	return false
+}
+
+func sameEventTypes(got, want []event.Type) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[event.Type]int, len(got))
+	for _, item := range got {
+		seen[item]++
+	}
+	for _, item := range want {
+		seen[item]--
+		if seen[item] < 0 {
+			return false
+		}
+	}
+	return true
 }

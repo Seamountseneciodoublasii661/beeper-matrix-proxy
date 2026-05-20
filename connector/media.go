@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -34,17 +33,99 @@ func cloneMessageContent(content *event.MessageEventContent) *event.MessageEvent
 	if content == nil {
 		return nil
 	}
-	raw, err := json.Marshal(content)
-	if err != nil {
-		dup := *content
-		return &dup
+	dup := *content
+	dup.Info = cloneFileInfo(content.Info)
+	dup.File = cloneEncryptedFileInfo(content.File)
+	dup.Mentions = cloneMentions(content.Mentions)
+	dup.NewContent = cloneMessageContent(content.NewContent)
+	dup.RelatesTo = cloneRelatesTo(content.RelatesTo)
+	dup.ImageSourcePacks = cloneMap(content.ImageSourcePacks)
+	dup.BridgedEmojis = cloneMap(content.BridgedEmojis)
+	dup.BeeperGalleryImages = cloneMessageContentSlice(content.BeeperGalleryImages)
+	dup.BeeperLinkPreviews = cloneSlice(content.BeeperLinkPreviews)
+	dup.MSC1767Audio = cloneMSC1767Audio(content.MSC1767Audio)
+	return &dup
+}
+
+func cloneFileInfo(info *event.FileInfo) *event.FileInfo {
+	if info == nil {
+		return nil
 	}
-	var dup event.MessageEventContent
-	if err = json.Unmarshal(raw, &dup); err != nil {
-		shallow := *content
-		return &shallow
+	dup := *info
+	dup.ThumbnailInfo = cloneFileInfo(info.ThumbnailInfo)
+	dup.ThumbnailFile = cloneEncryptedFileInfo(info.ThumbnailFile)
+	dup.Extra = cloneMap(info.Extra)
+	return &dup
+}
+
+func cloneEncryptedFileInfo(info *event.EncryptedFileInfo) *event.EncryptedFileInfo {
+	if info == nil {
+		return nil
+	}
+	dup := *info
+	return &dup
+}
+
+func cloneMentions(mentions *event.Mentions) *event.Mentions {
+	if mentions == nil {
+		return nil
+	}
+	dup := *mentions
+	dup.UserIDs = cloneSlice(mentions.UserIDs)
+	return &dup
+}
+
+func cloneRelatesTo(rel *event.RelatesTo) *event.RelatesTo {
+	if rel == nil {
+		return nil
+	}
+	dup := *rel
+	if rel.InReplyTo != nil {
+		reply := *rel.InReplyTo
+		if rel.InReplyTo.BeeperQuote != nil {
+			reply.BeeperQuote = append([]byte(nil), rel.InReplyTo.BeeperQuote...)
+		}
+		dup.InReplyTo = &reply
 	}
 	return &dup
+}
+
+func cloneMSC1767Audio(audio *event.MSC1767Audio) *event.MSC1767Audio {
+	if audio == nil {
+		return nil
+	}
+	dup := *audio
+	dup.Waveform = cloneSlice(audio.Waveform)
+	return &dup
+}
+
+func cloneMessageContentSlice(in []*event.MessageEventContent) []*event.MessageEventContent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*event.MessageEventContent, len(in))
+	for i, item := range in {
+		out[i] = cloneMessageContent(item)
+	}
+	return out
+}
+
+func cloneSlice[T any](in []T) []T {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]T(nil), in...)
+}
+
+func cloneMap[K comparable, V any](in map[K]V) map[K]V {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[K]V, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (nc *MyNetworkClient) reuploadContentToBeeper(ctx context.Context, intent bridgev2.MatrixAPI, content *event.MessageEventContent) error {

@@ -59,6 +59,8 @@ Beeper during testing:
 - Matrix call invites bridged as safe notices
 - conservative media size capabilities to avoid proxy-side HTTP 413 failures
 - restart-safe remote reaction redactions
+- lean Matrix sync filter with lazy-loaded members
+- bounded echo-suppression cache for Beeper -> Matrix sent events
 
 The remaining work is mostly around completeness: richer voice/GIF behavior,
 two-phase sync checkpointing, full poll lifecycle support, sync-gap backfill,
@@ -225,6 +227,26 @@ Important test coverage:
 |---|---|
 | Sync burst filter, edits, polls, relation rewriting | `connector/bridge_contract_test.go` |
 | Media URLs and upload limits | `connector/media_test.go` |
+| Local Synapse burst sync E2E | `connector/synapse_e2e_test.go`, `e2e/synapse/run.sh` |
+
+Run the performance suite:
+
+```bash
+./scripts/perf.sh
+```
+
+Run the full local Synapse E2E performance suite:
+
+```bash
+RUN_SYNAPSE_E2E=1 LOCAL_SYNAPSE_E2E_BURST=40 ./scripts/perf.sh
+```
+
+The Synapse suite starts a disposable Docker Synapse using the official
+`matrixdotorg/synapse` image, registers a test user, uploads the bridge's sync
+filter, sends a burst of messages, and verifies that the next `/sync` response
+contains every burst message. It raises Synapse test ratelimits in the temporary
+config so the test measures the bridge/filter behavior instead of default
+homeserver throttling.
 
 ## Design Notes
 
@@ -242,6 +264,21 @@ logical message. Replies, thread roots, reactions, edits, and deletes must be
 rewritten through the bridge database before crossing sides. Otherwise Beeper
 IDs such as `$event:beeper.local` leak into the remote homeserver where they
 cannot resolve.
+
+### Performance
+
+The bridge sync filter intentionally asks Synapse for only the event classes the
+proxy consumes. Room state is restricted to name, avatar, topic, and membership,
+with lazy-loaded members enabled to avoid large state payloads in busy rooms.
+
+Message cloning is on the hot path for every bridged event, so it avoids generic
+JSON round-tripping and deep-copies only the mutable fields the connector edits.
+On an Apple M4 Pro test run, the clone benchmark improved from roughly
+`2408 ns/op`, `1425 B/op`, and `20 allocs/op` to roughly `130 ns/op`, `576 B/op`,
+and `5 allocs/op`.
+
+The sent-event echo suppression cache is bounded so a long remote outage cannot
+turn missed echo events into unbounded memory growth.
 
 ### Media
 

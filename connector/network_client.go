@@ -25,6 +25,7 @@ var _ bridgev2.NetworkAPI = (*MyNetworkClient)(nil)
 const (
 	remoteReconnectBaseDelay = 30 * time.Second
 	remoteReconnectMaxDelay  = 5 * time.Minute
+	maxSentEventCacheSize    = 4096
 )
 
 // MyNetworkClient implements the bridgev2.NetworkAPI for interacting
@@ -45,6 +46,7 @@ type MyNetworkClient struct {
 	loggedIn           bool
 	sentMu             sync.Mutex
 	sentEvents         map[id.EventID]struct{}
+	sentEventOrder     []id.EventID
 	avatarMu           sync.Mutex
 	badAvatars         map[id.ContentURIString]struct{}
 	mediaMu            sync.RWMutex
@@ -302,7 +304,16 @@ func localMatrixSyncFilter() *mautrix.Filter {
 					event.EphemeralEventReceipt,
 				},
 			},
-			State: &mautrix.FilterPart{Limit: 20},
+			State: &mautrix.FilterPart{
+				Limit:           20,
+				LazyLoadMembers: true,
+				Types: []event.Type{
+					event.StateRoomName,
+					event.StateRoomAvatar,
+					event.StateTopic,
+					event.StateMember,
+				},
+			},
 			Timeline: &mautrix.FilterPart{
 				Limit: 50,
 				Types: []event.Type{
@@ -364,7 +375,11 @@ func (nc *MyNetworkClient) markSentEvent(eventID id.EventID) {
 	if nc.sentEvents == nil {
 		nc.sentEvents = make(map[id.EventID]struct{})
 	}
+	if _, ok := nc.sentEvents[eventID]; !ok {
+		nc.sentEventOrder = append(nc.sentEventOrder, eventID)
+	}
 	nc.sentEvents[eventID] = struct{}{}
+	nc.pruneSentEventsLocked()
 }
 
 func (nc *MyNetworkClient) consumeSentEvent(eventID id.EventID) bool {
@@ -381,6 +396,24 @@ func (nc *MyNetworkClient) consumeSentEvent(eventID id.EventID) bool {
 	}
 	delete(nc.sentEvents, eventID)
 	return true
+}
+
+func (nc *MyNetworkClient) pruneSentEventsLocked() {
+	for len(nc.sentEvents) > maxSentEventCacheSize && len(nc.sentEventOrder) > 0 {
+		oldest := nc.sentEventOrder[0]
+		nc.sentEventOrder = nc.sentEventOrder[1:]
+		delete(nc.sentEvents, oldest)
+	}
+	if len(nc.sentEventOrder) <= maxSentEventCacheSize*2 {
+		return
+	}
+	compacted := nc.sentEventOrder[:0]
+	for _, eventID := range nc.sentEventOrder {
+		if _, ok := nc.sentEvents[eventID]; ok {
+			compacted = append(compacted, eventID)
+		}
+	}
+	nc.sentEventOrder = compacted
 }
 
 func (nc *MyNetworkClient) LogoutRemote(ctx context.Context) {

@@ -246,6 +246,42 @@ func TestGetLocalMaxUploadSizeDoesNotAdvertiseAboveSynapseLimit(t *testing.T) {
 	}
 }
 
+func TestCloneMessageContentKeepsHotPathAllocationsLow(t *testing.T) {
+	content := &event.MessageEventContent{
+		MsgType:   event.MsgText,
+		Body:      "hello",
+		RelatesTo: (&event.RelatesTo{}).SetReplyTo("$reply:example"),
+		Mentions:  &event.Mentions{UserIDs: []id.UserID{"@alice:example"}},
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		clone := cloneMessageContent(content)
+		clone.Body = "changed"
+		clone.RelatesTo.InReplyTo.EventID = "$other:example"
+		clone.Mentions.UserIDs[0] = "@bob:example"
+	})
+
+	if content.Body != "hello" || content.RelatesTo.InReplyTo.EventID != "$reply:example" || content.Mentions.UserIDs[0] != "@alice:example" {
+		t.Fatalf("clone mutated original content: %#v", content)
+	}
+	if allocs > 8 {
+		t.Fatalf("cloneMessageContent is too allocation-heavy for the sync hot path: got %.1f allocs/run", allocs)
+	}
+}
+
+func BenchmarkCloneMessageContent(b *testing.B) {
+	content := &event.MessageEventContent{
+		MsgType:   event.MsgText,
+		Body:      strings.Repeat("hello ", 20),
+		RelatesTo: (&event.RelatesTo{}).SetReplyTo("$reply:example"),
+		Mentions:  &event.Mentions{UserIDs: []id.UserID{"@alice:example", "@bob:example"}},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = cloneMessageContent(content)
+	}
+}
+
 func TestDecryptEncryptedMediaInPlace(t *testing.T) {
 	plaintext := []byte("hello encrypted matrix media")
 	encrypted := append([]byte(nil), plaintext...)
