@@ -24,7 +24,7 @@ func TestLocalMatrixSyncFilterKeepsBursts(t *testing.T) {
 	if filter == nil || filter.Room == nil || filter.Room.Timeline == nil {
 		t.Fatal("expected room timeline filter")
 	}
-	if got := filter.Room.Timeline.Limit; got < 50 {
+	if got := filter.Room.Timeline.Limit; got < defaultLocalMatrixSyncTimelineLimit {
 		t.Fatalf("expected timeline limit to preserve bursts, got %d", got)
 	}
 	if !containsEventType(filter.Room.Timeline.Types, event.EventSticker) {
@@ -38,6 +38,26 @@ func TestLocalMatrixSyncFilterKeepsBursts(t *testing.T) {
 	}
 	if !sameEventTypes(filter.Room.State.Types, []event.Type{event.StateRoomName, event.StateRoomAvatar, event.StateTopic, event.StateMember}) {
 		t.Fatalf("expected state filter to only request bridge-relevant state, got %#v", filter.Room.State.Types)
+	}
+}
+
+func TestLocalMatrixSyncFilterTimelineLimitCanBeRaisedForPerformanceTesting(t *testing.T) {
+	t.Setenv("LOCAL_MATRIX_SYNC_TIMELINE_LIMIT", "150")
+
+	filter := localMatrixSyncFilter()
+
+	if got := filter.Room.Timeline.Limit; got != 150 {
+		t.Fatalf("expected env timeline limit 150, got %d", got)
+	}
+}
+
+func TestLocalMatrixSyncFilterTimelineLimitKeepsSafeMinimum(t *testing.T) {
+	t.Setenv("LOCAL_MATRIX_SYNC_TIMELINE_LIMIT", "1")
+
+	filter := localMatrixSyncFilter()
+
+	if got := filter.Room.Timeline.Limit; got != defaultLocalMatrixSyncTimelineLimit {
+		t.Fatalf("expected unsafe low env timeline limit to fall back to %d, got %d", defaultLocalMatrixSyncTimelineLimit, got)
 	}
 }
 

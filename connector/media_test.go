@@ -181,6 +181,25 @@ func TestGenerateFallbackAvatarPNG(t *testing.T) {
 	}
 }
 
+func TestGeneratedFallbackAvatarUsesCacheForRepeatedMXC(t *testing.T) {
+	nc := &MyNetworkClient{}
+	uri := id.ContentURIString("mxc://example.invalid/missing")
+	if avatar := nc.generatedFallbackAvatarFromMXC(uri); avatar == nil {
+		t.Fatal("expected fallback avatar")
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		avatar := nc.generatedFallbackAvatarFromMXC(uri)
+		if avatar == nil {
+			t.Fatal("expected cached fallback avatar")
+		}
+	})
+
+	if allocs > 10 {
+		t.Fatalf("expected repeated fallback avatar generation to be cached, got %.1f allocs/run", allocs)
+	}
+}
+
 func TestNormalizeMediaContentForBeeperMarksAnimatedGIF(t *testing.T) {
 	content := &event.MessageEventContent{
 		MsgType: event.MsgVideo,
@@ -279,6 +298,18 @@ func BenchmarkCloneMessageContent(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = cloneMessageContent(content)
+	}
+}
+
+func BenchmarkGeneratedFallbackAvatarFromMXC(b *testing.B) {
+	nc := &MyNetworkClient{}
+	uri := id.ContentURIString("mxc://example.invalid/missing")
+	if avatar := nc.generatedFallbackAvatarFromMXC(uri); avatar == nil {
+		b.Fatal("expected fallback avatar")
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = nc.generatedFallbackAvatarFromMXC(uri)
 	}
 }
 

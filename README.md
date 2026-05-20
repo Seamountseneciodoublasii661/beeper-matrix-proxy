@@ -237,6 +237,9 @@ Run the performance suite:
 
 This writes human-readable and JSONL benchmark artifacts under
 `perf-results/<timestamp>/` by default. Override with `PERF_RESULTS_DIR=/path`.
+The default benchmark set covers the message-content clone hot path and cached
+fallback avatar generation for stale Matrix media. Override the benchmark regex
+with `BENCH_REGEX=...` when investigating a narrower path.
 
 Run the full local Synapse E2E performance suite:
 
@@ -250,6 +253,11 @@ filter, sends one or more message bursts, and verifies that the next `/sync`
 response contains every burst message. It raises Synapse test ratelimits in the
 temporary config so the test measures the bridge/filter behavior instead of
 default homeserver throttling.
+
+The live Matrix sync timeline limit defaults to `100` to preserve larger bursts
+without making every incremental `/sync` too heavy. Tune it with
+`LOCAL_MATRIX_SYNC_TIMELINE_LIMIT`; the local Synapse E2E runner automatically
+raises that value to the largest configured burst when needed.
 
 ## Design Notes
 

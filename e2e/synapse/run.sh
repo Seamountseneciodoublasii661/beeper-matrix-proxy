@@ -6,6 +6,7 @@ IMAGE="${SYNAPSE_IMAGE:-matrixdotorg/synapse:latest}"
 SERVER_NAME="${SYNAPSE_SERVER_NAME:-localhost}"
 BURST="${LOCAL_SYNAPSE_E2E_BURST:-40}"
 BURSTS="${LOCAL_SYNAPSE_E2E_BURSTS:-$BURST}"
+SYNC_TIMELINE_LIMIT="${LOCAL_MATRIX_SYNC_TIMELINE_LIMIT:-}"
 PORT="${LOCAL_SYNAPSE_E2E_PORT:-}"
 DATA_DIR="${LOCAL_SYNAPSE_E2E_DATA_DIR:-}"
 CONTAINER="${LOCAL_SYNAPSE_E2E_CONTAINER:-beeper-matrix-proxy-synapse-$$}"
@@ -83,6 +84,16 @@ ACCESS_TOKEN="$(printf '%s' "$LOGIN_JSON" | python3 -c 'import json,sys; print(j
 USER_ID="$(printf '%s' "$LOGIN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_id"])')"
 
 IFS=',' read -r -a BURST_LIST <<< "$BURSTS"
+if [[ -z "$SYNC_TIMELINE_LIMIT" ]]; then
+  SYNC_TIMELINE_LIMIT=100
+  for burst_value in "${BURST_LIST[@]}"; do
+    burst_value="$(printf '%s' "$burst_value" | xargs)"
+    [[ -n "$burst_value" ]] || continue
+    if (( burst_value > SYNC_TIMELINE_LIMIT )); then
+      SYNC_TIMELINE_LIMIT="$burst_value"
+    fi
+  done
+fi
 for burst_value in "${BURST_LIST[@]}"; do
   burst_value="$(printf '%s' "$burst_value" | xargs)"
   [[ -n "$burst_value" ]] || continue
@@ -93,6 +104,7 @@ for burst_value in "${BURST_LIST[@]}"; do
     LOCAL_SYNAPSE_E2E_USER_ID="$USER_ID" \
     LOCAL_SYNAPSE_E2E_ACCESS_TOKEN="$ACCESS_TOKEN" \
     LOCAL_SYNAPSE_E2E_BURST="$burst_value" \
+    LOCAL_MATRIX_SYNC_TIMELINE_LIMIT="$SYNC_TIMELINE_LIMIT" \
     CGO_CFLAGS="${CGO_CFLAGS:-"-I/opt/homebrew/opt/libolm/include"}" \
     CGO_LDFLAGS="${CGO_LDFLAGS:-"-L/opt/homebrew/opt/libolm/lib -lolm"}" \
     go test -tags synapse_e2e ./connector -run TestSynapseBurstSyncE2E -count=1 -v

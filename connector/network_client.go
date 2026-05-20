@@ -23,9 +23,10 @@ import (
 var _ bridgev2.NetworkAPI = (*MyNetworkClient)(nil)
 
 const (
-	remoteReconnectBaseDelay = 30 * time.Second
-	remoteReconnectMaxDelay  = 5 * time.Minute
-	maxSentEventCacheSize    = 4096
+	remoteReconnectBaseDelay            = 30 * time.Second
+	remoteReconnectMaxDelay             = 5 * time.Minute
+	maxSentEventCacheSize               = 4096
+	defaultLocalMatrixSyncTimelineLimit = 100
 )
 
 // MyNetworkClient implements the bridgev2.NetworkAPI for interacting
@@ -49,6 +50,7 @@ type MyNetworkClient struct {
 	sentEventOrder     []id.EventID
 	avatarMu           sync.Mutex
 	badAvatars         map[id.ContentURIString]struct{}
+	fallbackAvatars    map[id.ContentURIString][]byte
 	mediaMu            sync.RWMutex
 	localMaxUploadSize int64
 	typingMu           sync.Mutex
@@ -291,6 +293,7 @@ func (nc *MyNetworkClient) getLocalMaxUploadSize() int64 {
 }
 
 func localMatrixSyncFilter() *mautrix.Filter {
+	timelineLimit := localMatrixSyncTimelineLimit()
 	return &mautrix.Filter{
 		EventFormat: mautrix.EventFormatClient,
 		Presence:    &mautrix.FilterPart{NotTypes: []event.Type{event.NewEventType("*")}},
@@ -315,7 +318,7 @@ func localMatrixSyncFilter() *mautrix.Filter {
 				},
 			},
 			Timeline: &mautrix.FilterPart{
-				Limit: 50,
+				Limit: timelineLimit,
 				Types: []event.Type{
 					event.EventMessage,
 					event.EventSticker,
@@ -331,6 +334,14 @@ func localMatrixSyncFilter() *mautrix.Filter {
 			},
 		},
 	}
+}
+
+func localMatrixSyncTimelineLimit() int {
+	limit := envInt("LOCAL_MATRIX_SYNC_TIMELINE_LIMIT", defaultLocalMatrixSyncTimelineLimit)
+	if limit < defaultLocalMatrixSyncTimelineLimit {
+		return defaultLocalMatrixSyncTimelineLimit
+	}
+	return limit
 }
 
 func dropInitialTimelineEvents(_ context.Context, resp *mautrix.RespSync, since string) bool {
@@ -567,6 +578,18 @@ func (nc *MyNetworkClient) fallbackAvatarFromMXC(uri id.ContentURIString, err er
 }
 
 func (nc *MyNetworkClient) generatedFallbackAvatarFromMXC(uri id.ContentURIString) *bridgev2.Avatar {
+	nc.avatarMu.Lock()
+	if data, ok := nc.fallbackAvatars[uri]; ok {
+		nc.avatarMu.Unlock()
+		return &bridgev2.Avatar{
+			ID: networkid.AvatarID("fallback:" + string(uri)),
+			Get: func(ctx context.Context) ([]byte, error) {
+				return append([]byte(nil), data...), nil
+			},
+		}
+	}
+	nc.avatarMu.Unlock()
+
 	data, genErr := generateFallbackAvatarPNG(string(uri))
 	if genErr != nil {
 		nc.log.Warn().
@@ -575,6 +598,12 @@ func (nc *MyNetworkClient) generatedFallbackAvatarFromMXC(uri id.ContentURIStrin
 			Msg("Failed to generate fallback Matrix avatar")
 		return nil
 	}
+	nc.avatarMu.Lock()
+	if nc.fallbackAvatars == nil {
+		nc.fallbackAvatars = make(map[id.ContentURIString][]byte)
+	}
+	nc.fallbackAvatars[uri] = data
+	nc.avatarMu.Unlock()
 	return &bridgev2.Avatar{
 		ID: networkid.AvatarID("fallback:" + string(uri)),
 		Get: func(ctx context.Context) ([]byte, error) {

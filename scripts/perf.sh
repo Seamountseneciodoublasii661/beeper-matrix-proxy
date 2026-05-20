@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BENCH_COUNT="${BENCH_COUNT:-5}"
+BENCH_REGEX="${BENCH_REGEX:-Benchmark(CloneMessageContent|GeneratedFallbackAvatarFromMXC)}"
 RESULTS_DIR="${PERF_RESULTS_DIR:-"$ROOT/perf-results/$(date -u +%Y%m%dT%H%M%SZ)"}"
 
 cd "$ROOT"
@@ -13,7 +14,7 @@ CGO_CFLAGS="${CGO_CFLAGS:-"-I/opt/homebrew/opt/libolm/include"}" \
 CGO_LDFLAGS="${CGO_LDFLAGS:-"-L/opt/homebrew/opt/libolm/lib -lolm"}" \
 go test ./connector \
   -run '^$' \
-  -bench 'BenchmarkCloneMessageContent' \
+  -bench "$BENCH_REGEX" \
   -benchmem \
   -count "$BENCH_COUNT" | tee "$RESULTS_DIR/bench.txt"
 
@@ -22,7 +23,7 @@ CGO_CFLAGS="${CGO_CFLAGS:-"-I/opt/homebrew/opt/libolm/include"}" \
 CGO_LDFLAGS="${CGO_LDFLAGS:-"-L/opt/homebrew/opt/libolm/lib -lolm"}" \
 go test -json ./connector \
   -run '^$' \
-  -bench 'BenchmarkCloneMessageContent' \
+  -bench "$BENCH_REGEX" \
   -benchmem \
   -count 1 > "$RESULTS_DIR/bench.jsonl"
 

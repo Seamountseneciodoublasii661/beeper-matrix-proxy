@@ -36,8 +36,8 @@ func TestSynapseBurstSyncE2E(t *testing.T) {
 	if count <= 0 {
 		count = 40
 	}
-	if count > 50 {
-		t.Fatalf("burst count %d is larger than localMatrixSyncFilter timeline limit", count)
+	if limit := localMatrixSyncTimelineLimit(); count > limit {
+		t.Fatalf("burst count %d is larger than localMatrixSyncFilter timeline limit %d", count, limit)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
