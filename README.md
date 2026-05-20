@@ -251,7 +251,8 @@ The public GitHub CI runs the same core checks expected locally:
 go test ./...
 go vet ./...
 go test -race ./connector
-BENCH_COUNT=1 ./scripts/perf.sh
+python3 -m unittest scripts/perf_metrics_test.py -v
+BENCH_COUNT=1 PERF_ENFORCE_GATES=1 ./scripts/perf.sh
 ```
 
 For local macOS builds, keep the `libolm` CGO flags from the examples below.
@@ -295,6 +296,16 @@ Key artifacts:
 | `metadata.json` | Commit, dirty flag, Go version, platform, and run settings. |
 | `synapse-e2e.txt` | Local Synapse E2E log when `RUN_SYNAPSE_E2E=1`. |
 | `synapse-summary.json` | Parsed burst and mixed-modality E2E timings. |
+
+Enable performance gates:
+
+```bash
+PERF_ENFORCE_GATES=1 ./scripts/perf.sh
+```
+
+The default gates are intentionally generous and mostly guard against accidental
+algorithmic regressions and allocation explosions. Override them with
+`PERF_GATES_FILE=/path/to/gates.json` for stricter local or release checks.
 
 Generate CPU and memory profile artifacts:
 
