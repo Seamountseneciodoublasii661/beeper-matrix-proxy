@@ -13,8 +13,9 @@ public `main` branch.
   smoke benchmark.
 - README performance snapshot with measured hot-path improvements.
 - README link to this changelog.
-- Mixed-modality local Synapse E2E coverage for text, edits, stickers,
-  reactions, redactions, polls, room state, and call invites.
+- Mixed-modality local Synapse E2E coverage for text, image, file, audio, video,
+  location, emote, notice, edits, stickers, reactions, redactions, polls, room
+  state, and call invites.
 - Optional performance profiling artifacts via `PERF_PROFILE=1 ./scripts/perf.sh`
   (`cpu.pprof`, `mem.pprof`, and top reports).
 - `metadata.json` in every performance result directory with commit, Go version,

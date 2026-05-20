@@ -73,6 +73,43 @@ func TestSynapseMixedModalitySyncE2E(t *testing.T) {
 
 	start := time.Now()
 	textID := client.sendText(ctx, t, roomID, "modality-text", 0)
+	client.sendMessageModality(ctx, t, roomID, "m.image", "modality-image.png", map[string]any{
+		"url": "mxc://localhost/test-image",
+		"info": map[string]any{
+			"mimetype": "image/png",
+			"w":        64,
+			"h":        64,
+		},
+	})
+	client.sendMessageModality(ctx, t, roomID, "m.file", "modality-file.txt", map[string]any{
+		"url":      "mxc://localhost/test-file",
+		"filename": "modality-file.txt",
+		"info": map[string]any{
+			"mimetype": "text/plain",
+			"size":     12,
+		},
+	})
+	client.sendMessageModality(ctx, t, roomID, "m.audio", "modality-audio.ogg", map[string]any{
+		"url": "mxc://localhost/test-audio",
+		"info": map[string]any{
+			"mimetype": "audio/ogg",
+			"duration": 1200,
+		},
+	})
+	client.sendMessageModality(ctx, t, roomID, "m.video", "modality-video.mp4", map[string]any{
+		"url": "mxc://localhost/test-video",
+		"info": map[string]any{
+			"mimetype": "video/mp4",
+			"duration": 1200,
+			"w":        64,
+			"h":        64,
+		},
+	})
+	client.sendMessageModality(ctx, t, roomID, "m.location", "modality-location", map[string]any{
+		"geo_uri": "geo:48.2082,16.3738",
+	})
+	client.sendMessageModality(ctx, t, roomID, "m.emote", "waves", nil)
+	client.sendMessageModality(ctx, t, roomID, "m.notice", "modality-notice", nil)
 	stickerID := client.sendSticker(ctx, t, roomID)
 	client.sendReaction(ctx, t, roomID, textID)
 	client.sendEdit(ctx, t, roomID, textID)
@@ -83,17 +120,26 @@ func TestSynapseMixedModalitySyncE2E(t *testing.T) {
 	sendDuration := time.Since(start)
 
 	syncStart := time.Now()
-	counts := client.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
-		"m.room.message":                2,
+	counts, msgTypes := client.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
+		"m.room.message":                9,
 		"m.sticker":                     1,
 		"m.reaction":                    1,
 		"org.matrix.msc3381.poll.start": 1,
 		"m.call.invite":                 1,
 		"m.room.topic":                  1,
 		"m.room.redaction":              1,
+	}, map[string]int{
+		"m.text":     2,
+		"m.image":    1,
+		"m.file":     1,
+		"m.audio":    1,
+		"m.video":    1,
+		"m.location": 1,
+		"m.emote":    1,
+		"m.notice":   1,
 	})
 	syncDuration := time.Since(syncStart)
-	t.Logf("synapse mixed modality sync counts=%v send_duration=%s sync_duration=%s", counts, sendDuration, syncDuration)
+	t.Logf("synapse mixed modality sync counts=%v msgtypes=%v send_duration=%s sync_duration=%s", counts, msgTypes, sendDuration, syncDuration)
 }
 
 func newSynapseE2EClient(t *testing.T) synapseE2EClient {
@@ -146,6 +192,18 @@ func (c synapseE2EClient) sendText(ctx context.Context, t *testing.T, roomID id.
 		"msgtype": "m.text",
 		"body":    body,
 	})
+}
+
+func (c synapseE2EClient) sendMessageModality(ctx context.Context, t *testing.T, roomID id.RoomID, msgType, body string, extra map[string]any) id.EventID {
+	t.Helper()
+	content := map[string]any{
+		"msgtype": msgType,
+		"body":    body,
+	}
+	for key, value := range extra {
+		content[key] = value
+	}
+	return c.sendRoomEvent(ctx, t, roomID, "m.room.message", "perf-"+strings.TrimPrefix(msgType, "m."), content)
 }
 
 func (c synapseE2EClient) sendSticker(ctx context.Context, t *testing.T, roomID id.RoomID) id.EventID {
@@ -288,9 +346,10 @@ func (c synapseE2EClient) syncUntilBurstMessages(ctx context.Context, t *testing
 	return len(seen)
 }
 
-func (c synapseE2EClient) syncUntilEventTypes(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, want map[string]int) map[string]int {
+func (c synapseE2EClient) syncUntilEventTypes(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, want map[string]int, wantMsgTypes map[string]int) (map[string]int, map[string]int) {
 	t.Helper()
 	counts := make(map[string]int, len(want))
+	msgTypes := make(map[string]int, len(wantMsgTypes))
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		resp := c.syncOnce(ctx, t, filterID, since, 5*time.Second)
@@ -300,10 +359,13 @@ func (c synapseE2EClient) syncUntilEventTypes(ctx context.Context, t *testing.T,
 		if room := resp.Rooms.Join[roomID]; room != nil {
 			for _, evt := range room.Timeline.Events {
 				counts[evt.Type]++
+				if evt.Type == "m.room.message" && evt.Content.MsgType != "" {
+					msgTypes[evt.Content.MsgType]++
+				}
 			}
 		}
-		if hasEventTypeCounts(counts, want) {
-			return counts
+		if hasEventTypeCounts(counts, want) && hasEventTypeCounts(msgTypes, wantMsgTypes) {
+			return counts, msgTypes
 		}
 	}
 	for eventType, count := range want {
@@ -311,7 +373,12 @@ func (c synapseE2EClient) syncUntilEventTypes(ctx context.Context, t *testing.T,
 			t.Fatalf("expected at least %d %s events, got %d in counts=%v", count, eventType, counts[eventType], counts)
 		}
 	}
-	return counts
+	for msgType, count := range wantMsgTypes {
+		if msgTypes[msgType] < count {
+			t.Fatalf("expected at least %d %s msgtypes, got %d in msgtypes=%v", count, msgType, msgTypes[msgType], msgTypes)
+		}
+	}
+	return counts, msgTypes
 }
 
 func hasEventTypeCounts(counts, want map[string]int) bool {
@@ -366,7 +433,8 @@ type synapseSyncResponse struct {
 				Events []struct {
 					Type    string `json:"type"`
 					Content struct {
-						Body string `json:"body"`
+						Body    string `json:"body"`
+						MsgType string `json:"msgtype"`
 					} `json:"content"`
 				} `json:"events"`
 			} `json:"timeline"`

@@ -129,7 +129,7 @@ burst_re = re.compile(
     r'synapse burst sync delivered (\d+)/(\d+) messages; send_duration=([^ ]+) sync_duration=([^ ]+)'
 )
 mixed_re = re.compile(
-    r'synapse mixed modality sync counts=(map\[[^\]]+\]) send_duration=([^ ]+) sync_duration=([^ ]+)'
+    r'synapse mixed modality sync counts=(map\[[^\]]+\]) msgtypes=(map\[[^\]]+\]) send_duration=([^ ]+) sync_duration=([^ ]+)'
 )
 summary = {"bursts": [], "mixed_modality": None}
 with open(sys.argv[1], encoding="utf-8") as f:
@@ -144,9 +144,10 @@ with open(sys.argv[1], encoding="utf-8") as f:
             })
             continue
         if match := mixed_re.search(line):
-            counts, send, sync = match.groups()
+            counts, msgtypes, send, sync = match.groups()
             summary["mixed_modality"] = {
                 "counts": counts,
+                "msgtypes": msgtypes,
                 "send_ms": duration_ms(send),
                 "sync_ms": duration_ms(sync),
             }

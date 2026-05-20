@@ -35,8 +35,9 @@ Docker Synapse E2E:
 
 The current 100-message Synapse burst test delivered all events with roughly
 `1.88s` send time and `15ms` sync pickup time in the local harness. A mixed
-modality E2E run also verifies text, edit, sticker, reaction, redaction, poll
-start, room state, and call invite events against the same disposable Synapse.
+modality E2E run also verifies text, image, file, audio, video, location, emote,
+notice, edit, sticker, reaction, redaction, poll start, room state, and call
+invite events against the same disposable Synapse.
 These
 numbers are not a production SLA, but they make the hot paths reproducible and
 guard against regressions.
@@ -87,8 +88,9 @@ Beeper during testing:
 - bounded echo-suppression cache for Beeper -> Matrix sent events
 - cached generated fallback avatars for stale or unavailable remote media
 - reproducible benchmarks and local Synapse burst E2E artifacts
-- mixed-modality local Synapse E2E coverage for text, edits, stickers,
-  reactions, redactions, polls, room state, and call notices
+- mixed-modality local Synapse E2E coverage for text, image, file, audio, video,
+  location, emote, notice, edits, stickers, reactions, redactions, polls, room
+  state, and call notices
 
 The remaining work is mostly around completeness: richer voice/GIF behavior,
 two-phase sync checkpointing, full poll lifecycle support, sync-gap backfill,
