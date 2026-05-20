@@ -276,12 +276,23 @@ Run the performance suite:
 ./scripts/perf.sh
 ```
 
-This writes human-readable, JSONL, and run metadata artifacts under
+This writes human-readable, JSONL, summary, and run metadata artifacts under
 `perf-results/<timestamp>/` by default. Override with `PERF_RESULTS_DIR=/path`.
 The default benchmark set covers the message-content clone hot path and cached
 fallback avatar generation for stale Matrix media, plus raw poll/event map
 cloning. Override the benchmark regex with `BENCH_REGEX=...` when investigating
 a narrower path.
+
+Key artifacts:
+
+| File | Purpose |
+|---|---|
+| `bench.txt` | Human-readable Go benchmark output. |
+| `bench.jsonl` | Raw `go test -json` stream for custom tooling. |
+| `benchmark-summary.json` | Aggregated mean/min/max benchmark metrics. |
+| `metadata.json` | Commit, dirty flag, Go version, platform, and run settings. |
+| `synapse-e2e.txt` | Local Synapse E2E log when `RUN_SYNAPSE_E2E=1`. |
+| `synapse-summary.json` | Parsed burst and mixed-modality E2E timings. |
 
 Generate CPU and memory profile artifacts:
 
@@ -290,7 +301,7 @@ PERF_PROFILE=1 ./scripts/perf.sh
 ```
 
 This writes `cpu.pprof`, `mem.pprof`, `cpu-top.txt`, `mem-top.txt`, and
-`profile-bench.txt` alongside `bench.txt`, `bench.jsonl`, and `metadata.json`.
+`profile-bench.txt` alongside the normal benchmark artifacts.
 
 Run the full local Synapse E2E performance suite:
 

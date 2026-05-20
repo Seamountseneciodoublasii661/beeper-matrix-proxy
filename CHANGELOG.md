@@ -19,6 +19,8 @@ public `main` branch.
   (`cpu.pprof`, `mem.pprof`, and top reports).
 - `metadata.json` in every performance result directory with commit, Go version,
   platform, benchmark regex, and E2E/profile settings.
+- `benchmark-summary.json` and `synapse-summary.json` for quick regression
+  comparison without parsing human-readable logs.
 
 ### Performance
 
