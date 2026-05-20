@@ -4,6 +4,7 @@
 stock Beeper client and a bridgev2 custom bridge.**
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![CI](https://github.com/Martin-Hausleitner/beeper-matrix-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Martin-Hausleitner/beeper-matrix-proxy/actions/workflows/ci.yml)
 [![Matrix](https://img.shields.io/badge/Matrix-bridge-black?logo=matrix&logoColor=white)](https://matrix.org/)
 [![Beeper](https://img.shields.io/badge/Beeper-bridgev2-35C759)](https://developers.beeper.com/bridges/self-hosting)
 [![Status](https://img.shields.io/badge/status-experimental-orange)](#current-status)
@@ -16,6 +17,25 @@ rooms inside Beeper through Beeper's self-hosted bridge flow (`bbctl`).
 It does **not** patch Beeper Desktop. The bridge tries to speak the data contract
 that Beeper already understands: room features, Matrix events, media metadata,
 portal rooms, and appservice websocket traffic.
+
+## Performance Snapshot
+
+Latest local run on Apple M4 Pro, using `./scripts/perf.sh` plus disposable
+Docker Synapse E2E:
+
+| Area | Before | Now | Improvement |
+|---|---:|---:|---:|
+| Message content clone latency | ~2408 ns/op | ~120 ns/op | ~20x faster |
+| Message content clone allocations | 20 allocs/op | 5 allocs/op | 75% fewer |
+| Message content clone bytes | 1425 B/op | 576 B/op | ~60% fewer |
+| Repeated fallback avatar path | 38 allocs/run | 3 allocs/op | ~92% fewer |
+| Default remote `/sync` burst window | 50 timeline events | 100 timeline events | 2x larger |
+| Local Synapse burst E2E | 40/40 messages | 100/100 messages | larger verified burst |
+
+The current 100-message Synapse burst test delivered all events with roughly
+`2.06s` send time and `27ms` sync pickup time in the local harness. These
+numbers are not a production SLA, but they make the hot paths reproducible and
+guard against regressions.
 
 ## The Short Version
 
@@ -61,6 +81,8 @@ Beeper during testing:
 - restart-safe remote reaction redactions
 - lean Matrix sync filter with lazy-loaded members
 - bounded echo-suppression cache for Beeper -> Matrix sent events
+- cached generated fallback avatars for stale or unavailable remote media
+- reproducible benchmarks and local Synapse burst E2E artifacts
 
 The remaining work is mostly around completeness: richer voice/GIF behavior,
 two-phase sync checkpointing, full poll lifecycle support, sync-gap backfill,
@@ -213,6 +235,19 @@ homeserver username/password.
 
 ## Development
 
+### Quality Gates
+
+The public GitHub CI runs the same core checks expected locally:
+
+```bash
+go test ./...
+go vet ./...
+go test -race ./connector
+BENCH_COUNT=1 ./scripts/perf.sh
+```
+
+For local macOS builds, keep the `libolm` CGO flags from the examples below.
+
 Run tests:
 
 ```bash
@@ -325,6 +360,16 @@ invites; richer Element Call links are still planned.
 | 2 | Voice waveform fallback | Make voice notes render reliably when the source client omits waveform data. |
 | 2 | Poll vote/end round-trip | Finish full MSC3381 behavior in both directions. |
 | 3 | Optional GIF transcoding | Reduce large GIF upload failures and improve autoplay behavior. |
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full project history.
+
+Recent highlights:
+
+- `a3c00d9`: cached fallback avatars and scaled Synapse burst E2E to 100 messages.
+- `98d2c47`: added benchmark artifacts and multi-burst Synapse E2E reporting.
+- `80fb7ce`: added the local Synapse E2E suite and optimized message-content cloning.
 
 ## Safety
 
