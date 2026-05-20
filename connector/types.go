@@ -10,13 +10,14 @@ import (
 // LoginMetadata stores additional remote-auth/session data in the bridge database.
 // Use this for connector-specific fields that don't fit in core bridge tables.
 type LoginMetadata struct {
-	RemoteUserID string     `json:"remote_user_id,omitempty"`
-	UserID       string     `json:"user_id,omitempty"`
-	AccessToken  string     `json:"access_token,omitempty"`
-	ExpiresAt    time.Time  `json:"expires_at,omitempty"`
-	DeviceID     string     `json:"device_id,omitempty"`
-	Scopes       []string   `json:"scopes,omitempty"`
-	LastSyncAt   *time.Time `json:"last_sync_at,omitempty"`
+	RemoteUserID  string     `json:"remote_user_id,omitempty"`
+	UserID        string     `json:"user_id,omitempty"`
+	HomeserverURL string     `json:"homeserver_url,omitempty"`
+	AccessToken   string     `json:"access_token,omitempty"`
+	ExpiresAt     time.Time  `json:"expires_at,omitempty"`
+	DeviceID      string     `json:"device_id,omitempty"`
+	Scopes        []string   `json:"scopes,omitempty"`
+	LastSyncAt    *time.Time `json:"last_sync_at,omitempty"`
 }
 
 // New creates a new instance for database registration.

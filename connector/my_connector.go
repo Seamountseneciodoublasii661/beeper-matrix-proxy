@@ -3,10 +3,13 @@ package connector
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -17,15 +20,20 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/id"
+	"maunium.net/go/mautrix/mediaproxy"
 )
 
 // Ensure MyConnector implements NetworkConnector.
 var _ bridgev2.NetworkConnector = (*MyConnector)(nil)
+var _ bridgev2.DirectMediableNetwork = (*MyConnector)(nil)
 
 // MyConnector implements the NetworkConnector interface.
 type MyConnector struct {
-	log    zerolog.Logger
-	bridge *bridgev2.Bridge
+	log            zerolog.Logger
+	bridge         *bridgev2.Bridge
+	directMedia    bool
+	directMediaMu  sync.RWMutex
+	clientsByLogin map[networkid.UserLoginID]*MyNetworkClient
 }
 
 // NewMyConnector creates a new instance of MyConnector.
@@ -39,6 +47,7 @@ func NewMyConnector(log zerolog.Logger) *MyConnector {
 func (c *MyConnector) Init(br *bridgev2.Bridge) {
 	c.bridge = br
 	c.log = c.bridge.Log
+	c.clientsByLogin = make(map[networkid.UserLoginID]*MyNetworkClient)
 	c.log.Info().Msg("MyConnector Init called")
 }
 
@@ -142,7 +151,11 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		sentEvents: make(map[id.EventID]struct{}),
 	}
 	if meta, ok := login.Metadata.(*LoginMetadata); ok {
-		cli, err := newLocalMatrixClient(meta.UserID, meta.AccessToken)
+		homeserverURL := meta.HomeserverURL
+		if homeserverURL == "" {
+			homeserverURL = localHomeserverURL()
+		}
+		cli, err := newLocalMatrixClientAt(homeserverURL, meta.UserID, meta.AccessToken)
 		if err != nil {
 			return err
 		}
@@ -152,6 +165,9 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 	}
 
 	login.Client = client
+	c.directMediaMu.Lock()
+	c.clientsByLogin[login.ID] = client
+	c.directMediaMu.Unlock()
 
 	c.log.Info().
 		Str("user_id", string(login.ID)).
@@ -162,6 +178,70 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 	return nil
 }
 
+type directMediaPayload struct {
+	Version int    `json:"v"`
+	LoginID string `json:"login_id"`
+	MXC     string `json:"mxc"`
+}
+
+func (c *MyConnector) SetUseDirectMedia() {
+	c.directMediaMu.Lock()
+	defer c.directMediaMu.Unlock()
+	c.directMedia = true
+}
+
+func (c *MyConnector) directMediaEnabled() bool {
+	c.directMediaMu.RLock()
+	defer c.directMediaMu.RUnlock()
+	return c.directMedia
+}
+
+func encodeDirectMediaID(loginID networkid.UserLoginID, uri id.ContentURIString) (networkid.MediaID, error) {
+	payload := directMediaPayload{
+		Version: 1,
+		LoginID: string(loginID),
+		MXC:     string(uri),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return networkid.MediaID(""), err
+	}
+	return networkid.MediaID(base64.RawURLEncoding.EncodeToString(raw)), nil
+}
+
+func decodeDirectMediaID(mediaID networkid.MediaID) (directMediaPayload, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(string(mediaID))
+	if err != nil {
+		return directMediaPayload{}, err
+	}
+	var payload directMediaPayload
+	if err = json.Unmarshal(raw, &payload); err != nil {
+		return directMediaPayload{}, err
+	}
+	if payload.Version != 1 || payload.LoginID == "" || payload.MXC == "" {
+		return directMediaPayload{}, fmt.Errorf("invalid direct media payload")
+	}
+	return payload, nil
+}
+
+func (c *MyConnector) Download(ctx context.Context, mediaID networkid.MediaID, params map[string]string) (mediaproxy.GetMediaResponse, error) {
+	payload, err := decodeDirectMediaID(mediaID)
+	if err != nil {
+		return nil, mautrix.MNotFound.WithMessage("Invalid direct media ID")
+	}
+	c.directMediaMu.RLock()
+	client := c.clientsByLogin[networkid.UserLoginID(payload.LoginID)]
+	c.directMediaMu.RUnlock()
+	if client == nil {
+		return nil, mautrix.MNotFound.WithMessage("Direct media login is not connected")
+	}
+	data, err := client.downloadFromLocalMatrix(ctx, id.ContentURIString(payload.MXC), nil)
+	if err != nil {
+		return nil, err
+	}
+	return mediaproxy.GetMediaResponseRawData(data), nil
+}
+
 func localHomeserverURL() string {
 	if value := os.Getenv("LOCAL_MATRIX_HS"); value != "" {
 		return value
@@ -170,7 +250,11 @@ func localHomeserverURL() string {
 }
 
 func newLocalMatrixClient(userID, accessToken string) (*mautrix.Client, error) {
-	cli, err := mautrix.NewClient(localHomeserverURL(), id.UserID(userID), accessToken)
+	return newLocalMatrixClientAt(localHomeserverURL(), userID, accessToken)
+}
+
+func newLocalMatrixClientAt(homeserverURL, userID, accessToken string) (*mautrix.Client, error) {
+	cli, err := mautrix.NewClient(homeserverURL, id.UserID(userID), accessToken)
 	if err != nil {
 		return nil, err
 	}

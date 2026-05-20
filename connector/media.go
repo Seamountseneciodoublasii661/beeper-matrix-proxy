@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -12,6 +13,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"time"
 
 	"maunium.net/go/mautrix"
@@ -22,6 +25,7 @@ import (
 
 const fallbackWaveformSamples = 100
 const fallbackAvatarSize = 128
+const defaultDirectMediaMaxBytes int64 = 100 * 1024 * 1024
 
 var matrixMediaHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
@@ -67,6 +71,9 @@ func (nc *MyNetworkClient) reuploadMediaToBeeper(ctx context.Context, intent bri
 	if content.URL == "" && content.File == nil {
 		return nil
 	}
+	if nc.maybeUseDirectMediaForBeeper(ctx, content) {
+		return nil
+	}
 	uri, enc := mediaSource(content)
 	data, err := nc.downloadFromLocalMatrix(ctx, uri, enc)
 	if err != nil {
@@ -87,6 +94,35 @@ func (nc *MyNetworkClient) reuploadMediaToBeeper(ctx context.Context, intent bri
 		Str("mxc", string(uploaded)).
 		Msg("Reuploaded media")
 	return nil
+}
+
+func (nc *MyNetworkClient) maybeUseDirectMediaForBeeper(ctx context.Context, content *event.MessageEventContent) bool {
+	if nc == nil || nc.connector == nil || nc.bridge == nil || nc.login == nil || !nc.connector.directMediaEnabled() || content == nil {
+		return false
+	}
+	if content.URL == "" || content.File != nil {
+		return false
+	}
+	mediaID, err := encodeDirectMediaID(nc.login.ID, content.URL)
+	if err != nil {
+		nc.log.Warn().Err(err).Msg("Failed to encode direct media ID")
+		return false
+	}
+	directURI, err := nc.bridge.Matrix.GenerateContentURI(ctx, mediaID)
+	if err != nil {
+		if !errors.Is(err, bridgev2.ErrDirectMediaNotEnabled) {
+			nc.log.Warn().Err(err).Msg("Failed to generate direct media MXC")
+		}
+		return false
+	}
+	content.URL = directURI
+	content.File = nil
+	nc.log.Info().
+		Str("direction", "matrix_to_beeper").
+		Str("msgtype", string(content.MsgType)).
+		Str("mxc", string(directURI)).
+		Msg("Using direct media MXC")
+	return true
 }
 
 func (nc *MyNetworkClient) reuploadContentToLocalMatrix(ctx context.Context, content *event.MessageEventContent) error {
@@ -168,7 +204,7 @@ func (nc *MyNetworkClient) downloadMatrixMedia(ctx context.Context, uri id.Conte
 	if err == nil {
 		return data, nil
 	}
-	fallback, fallbackErr := downloadMXCDirect(ctx, uri)
+	fallback, fallbackErr := downloadMXCDirect(ctx, uri, nc.mx.AccessToken, directMediaMaxBytes())
 	if fallbackErr != nil {
 		return nil, fmt.Errorf("homeserver media proxy failed: %w; direct origin media fetch failed: %w", err, fallbackErr)
 	}
@@ -178,20 +214,23 @@ func (nc *MyNetworkClient) downloadMatrixMedia(ctx context.Context, uri id.Conte
 	return fallback, nil
 }
 
-func downloadMXCDirect(ctx context.Context, uri id.ContentURI) ([]byte, error) {
+func downloadMXCDirect(ctx context.Context, uri id.ContentURI, accessToken string, maxBytes int64) ([]byte, error) {
 	var lastErr error
-	for _, downloadURL := range directMediaDownloadURLs(uri) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	for _, endpoint := range directMediaDownloadEndpoints(uri) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.URL, nil)
 		if err != nil {
 			lastErr = err
 			continue
+		}
+		if endpoint.Authenticated && accessToken != "" {
+			req.Header.Set("Authorization", "Bearer "+accessToken)
 		}
 		resp, err := matrixMediaHTTPClient.Do(req)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		data, readErr := readMatrixMediaResponse(resp)
+		data, readErr := readMatrixMediaResponse(resp, maxBytes)
 		if readErr != nil {
 			lastErr = readErr
 			continue
@@ -204,23 +243,63 @@ func downloadMXCDirect(ctx context.Context, uri id.ContentURI) ([]byte, error) {
 	return nil, lastErr
 }
 
-func readMatrixMediaResponse(resp *http.Response) ([]byte, error) {
+func readMatrixMediaResponse(resp *http.Response, maxBytes int64) ([]byte, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("HTTP %d from direct Matrix media download", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	if maxBytes <= 0 {
+		return io.ReadAll(resp.Body)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("direct Matrix media download exceeded limit (%d > %d bytes)", len(data), maxBytes)
+	}
+	return data, nil
 }
 
-func directMediaDownloadURLs(uri id.ContentURI) []string {
+func directMediaMaxBytes() int64 {
+	raw := os.Getenv("LOCAL_MATRIX_DIRECT_MEDIA_MAX_SIZE")
+	if raw == "" {
+		return defaultDirectMediaMaxBytes
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return defaultDirectMediaMaxBytes
+	}
+	return value
+}
+
+type directMediaDownloadEndpoint struct {
+	URL           string
+	Authenticated bool
+}
+
+func directMediaDownloadEndpoints(uri id.ContentURI) []directMediaDownloadEndpoint {
 	origin := "https://" + uri.Homeserver
 	server := url.PathEscape(uri.Homeserver)
 	mediaID := url.PathEscape(uri.FileID)
-	return []string{
-		origin + "/_matrix/media/v3/download/" + server + "/" + mediaID,
-		origin + "/_matrix/media/r0/download/" + server + "/" + mediaID,
+	return []directMediaDownloadEndpoint{
+		{
+			URL:           origin + "/_matrix/client/v1/media/download/" + server + "/" + mediaID,
+			Authenticated: true,
+		},
+		{URL: origin + "/_matrix/media/v3/download/" + server + "/" + mediaID},
+		{URL: origin + "/_matrix/media/r0/download/" + server + "/" + mediaID},
 	}
+}
+
+func directMediaDownloadURLs(uri id.ContentURI) []string {
+	endpoints := directMediaDownloadEndpoints(uri)
+	urls := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		urls = append(urls, endpoint.URL)
+	}
+	return urls
 }
 
 func generateFallbackAvatarPNG(seed string) ([]byte, error) {

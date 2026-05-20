@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"maunium.net/go/mautrix/crypto/attachment"
@@ -20,6 +24,7 @@ func TestDirectMediaDownloadURLsEscapeMXCParts(t *testing.T) {
 	urls := directMediaDownloadURLs(uri)
 
 	expected := []string{
+		"https://matrix.example:8448/_matrix/client/v1/media/download/matrix.example:8448/abc%2Fdef+ghi",
 		"https://matrix.example:8448/_matrix/media/v3/download/matrix.example:8448/abc%2Fdef+ghi",
 		"https://matrix.example:8448/_matrix/media/r0/download/matrix.example:8448/abc%2Fdef+ghi",
 	}
@@ -30,6 +35,72 @@ func TestDirectMediaDownloadURLsEscapeMXCParts(t *testing.T) {
 		if urls[i] != want {
 			t.Fatalf("url %d mismatch:\nwant %s\n got %s", i, want, urls[i])
 		}
+	}
+}
+
+func TestDownloadMXCDirectUsesAuthenticatedMediaEndpoint(t *testing.T) {
+	const token = "test-access-token"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/_matrix/client/v1/media/download/") {
+			t.Fatalf("expected authenticated media endpoint first, got %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Fatalf("expected bearer token, got %q", got)
+		}
+		_, _ = w.Write([]byte("media"))
+	}))
+	defer server.Close()
+
+	oldClient := matrixMediaHTTPClient
+	matrixMediaHTTPClient = server.Client()
+	t.Cleanup(func() {
+		matrixMediaHTTPClient = oldClient
+	})
+
+	data, err := downloadMXCDirect(t.Context(), id.ContentURI{
+		Homeserver: strings.TrimPrefix(server.URL, "https://"),
+		FileID:     "abc",
+	}, token, defaultDirectMediaMaxBytes)
+	if err != nil {
+		t.Fatalf("downloadMXCDirect returned error: %v", err)
+	}
+	if string(data) != "media" {
+		t.Fatalf("expected media bytes, got %q", data)
+	}
+}
+
+func TestReadMatrixMediaResponseRejectsOversizedBody(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("abcdef")),
+	}
+
+	_, err := readMatrixMediaResponse(resp, 5)
+	if err == nil {
+		t.Fatal("expected oversized body to be rejected")
+	}
+}
+
+func TestDirectMediaMaxBytesUsesEnvironmentOverride(t *testing.T) {
+	t.Setenv("LOCAL_MATRIX_DIRECT_MEDIA_MAX_SIZE", "42")
+
+	if got := directMediaMaxBytes(); got != 42 {
+		t.Fatalf("expected env override 42, got %d", got)
+	}
+}
+
+func TestDirectMediaIDRoundTrip(t *testing.T) {
+	mediaID, err := encodeDirectMediaID("login-1", id.ContentURIString("mxc://matrix.example/media"))
+	if err != nil {
+		t.Fatalf("encodeDirectMediaID returned error: %v", err)
+	}
+
+	payload, err := decodeDirectMediaID(mediaID)
+	if err != nil {
+		t.Fatalf("decodeDirectMediaID returned error: %v", err)
+	}
+	if payload.Version != 1 || payload.LoginID != "login-1" || payload.MXC != "mxc://matrix.example/media" {
+		t.Fatalf("unexpected direct media payload: %#v", payload)
 	}
 }
 

@@ -97,10 +97,11 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 			Name: loginResp.UserID.String(),
 		},
 		Metadata: &LoginMetadata{
-			RemoteUserID: loginResp.UserID.String(),
-			UserID:       loginResp.UserID.String(),
-			AccessToken:  loginResp.AccessToken,
-			DeviceID:     string(loginResp.DeviceID),
+			RemoteUserID:  loginResp.UserID.String(),
+			UserID:        loginResp.UserID.String(),
+			HomeserverURL: localHomeserverURL(),
+			AccessToken:   loginResp.AccessToken,
+			DeviceID:      string(loginResp.DeviceID),
 		},
 	}, &bridgev2.NewLoginParams{
 		DeleteOnConflict: false,

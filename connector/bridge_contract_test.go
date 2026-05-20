@@ -1,6 +1,8 @@
 package connector
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -22,6 +24,57 @@ func TestLocalMatrixSyncFilterKeepsBursts(t *testing.T) {
 	}
 	if filter.Room.Ephemeral == nil || !containsEventType(filter.Room.Ephemeral.Types, event.EphemeralEventTyping) || !containsEventType(filter.Room.Ephemeral.Types, event.EphemeralEventReceipt) {
 		t.Fatalf("expected sync filter to include typing and receipt ephemeral events, got %#v", filter.Room.Ephemeral)
+	}
+}
+
+func TestSyncExitClearsCancelForReconnect(t *testing.T) {
+	nc := &MyNetworkClient{
+		loggedIn:       true,
+		syncGeneration: 7,
+	}
+	nc.cancel = func() {}
+
+	nc.handleSyncExit(7, errors.New("temporary sync failure"))
+
+	if nc.cancel != nil {
+		t.Fatal("expected sync exit to clear cancel so Connect can reconnect")
+	}
+	if nc.loggedIn {
+		t.Fatal("expected transient sync failure to mark client logged out")
+	}
+}
+
+func TestOldSyncExitDoesNotClearNewConnection(t *testing.T) {
+	nc := &MyNetworkClient{
+		loggedIn:       true,
+		syncGeneration: 8,
+	}
+	nc.cancel = func() {}
+
+	nc.handleSyncExit(7, errors.New("old sync failure"))
+
+	if nc.cancel == nil {
+		t.Fatal("expected old sync generation not to clear current cancel")
+	}
+	if !nc.loggedIn {
+		t.Fatal("expected old sync generation not to alter login state")
+	}
+}
+
+func TestCanceledSyncExitClearsCancelWithoutTransientLogout(t *testing.T) {
+	nc := &MyNetworkClient{
+		loggedIn:       true,
+		syncGeneration: 3,
+		cancel:         func() {},
+	}
+
+	nc.handleSyncExit(3, context.Canceled)
+
+	if nc.cancel != nil {
+		t.Fatal("expected canceled sync exit to clear cancel")
+	}
+	if !nc.loggedIn {
+		t.Fatal("expected normal cancellation not to mark logged out")
 	}
 }
 

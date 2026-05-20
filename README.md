@@ -54,13 +54,14 @@ Beeper during testing:
 - message, edit, reply, and relation ID rewriting
 - Beeper-compatible poll fallback normalization
 - media reupload between homeservers
+- opt-in bridgev2 direct media support for unencrypted Matrix media
 - live typing notifications and read receipts
 - Matrix call invites bridged as safe notices
 - conservative media size capabilities to avoid proxy-side HTTP 413 failures
 
-The remaining work is mostly around completeness: direct media proxying, richer
-voice/GIF behavior, receipts, typing notifications, and safe cleanup tooling for
-old broken backfill events.
+The remaining work is mostly around completeness: richer voice/GIF behavior,
+durable reaction metadata, sync token persistence, full poll lifecycle support,
+and safe cleanup tooling for old broken backfill events.
 
 ## Feature Matrix
 
@@ -82,14 +83,14 @@ Legend:
 | Reactions | Partial | Both | Code path | Add/remove paths exist; broader Matrix client compatibility needs tests. |
 | Edits | Supported | Both | Regression test + live smoke test | Legacy Matrix edit fallback prefixes are stripped for Beeper rendering. |
 | Redactions / deletes | Partial | Both | Code path | Live delete paths exist; historical cleanup requires explicit redaction tooling. |
-| Images | Supported | Both | Regression test | Media is downloaded and reuploaded across homeservers. |
-| Files | Supported | Both | Regression test | Same media path as images; upload size is capability-capped. |
+| Images | Supported | Both | Regression test | Media is reuploaded by default; direct media is available when bridgev2 direct media is enabled. |
+| Files | Supported | Both | Regression test | Same media path as images; upload size and direct download size are capped. |
 | Videos | Partial | Both | Code path | Works as media; large files depend on real proxy and homeserver limits. |
 | GIFs | Partial | Both | Code path | Metadata handling exists; GIF-to-MP4 transcoding is not implemented yet. |
 | Voice messages | Partial | Both | Payload support | Voice metadata is supported; waveform generation needs more work. |
 | Polls | Partial | Matrix -> Beeper | Regression test + log-level E2E | Poll starts are normalized with MSC1767 text fallbacks; votes/end need E2E tests. |
 | Backfill / history | Partial | Matrix -> Beeper | Code path | Backfill APIs exist; safe placeholder cleanup is intentionally separate. |
-| Avatars | Partial | Matrix -> Beeper | Code path | Downloadable avatars work; stale media needs direct-media proxying. |
+| Avatars | Partial | Matrix -> Beeper | Code path | Downloadable avatars work; stale media is improved by authenticated media fallback and opt-in direct media. |
 | Typing notifications | Supported | Both | Regression test + code path | Beeper typing is sent to remote Matrix; remote Matrix typing is queued back to Beeper. |
 | Read receipts | Supported | Both | Code path | Exact Beeper receipts are sent to remote Matrix; remote Matrix receipts are queued to Beeper. |
 | Native audio/video calls | Not supported | Both | Intentionally hidden | Custom bridges should emit call notices/links instead of fake native call UI. |
@@ -158,11 +159,22 @@ Optional environment variables:
 | `LOCAL_MATRIX_INSECURE_TLS` | disabled | Set to `1`, `true`, or `yes` only for self-signed/private TLS during development. |
 | `LOCAL_MATRIX_INITIAL_BACKFILL_LIMIT` | `0` | Initial history import limit. |
 | `LOCAL_MATRIX_MAX_UPLOAD_SIZE` | remote media config | Caps the size advertised to Beeper when a proxy has a smaller real limit. |
+| `LOCAL_MATRIX_DIRECT_MEDIA_MAX_SIZE` | `104857600` | Maximum bytes accepted by the direct Matrix media fallback before aborting the download. |
 | `BEEPER_MATRIX_PROXY_DIR` | current directory | Directory used by `run-bridge.sh`. |
 | `BEEPER_MATRIX_PROXY_BINARY` | `./beeper-matrix-proxy` | Binary used by `run-bridge.sh`. |
 | `BEEPER_BRIDGE_NAME` | `sh-vcvm-matrix` | Bridge registration name passed to `bbctl run`. The default preserves the existing local test registration; set it to `beeper-matrix-proxy` for a fresh public-name registration. |
 | `BEEPER_MATRIX_PROXY_AUTOBUILD` | `1` | Build the binary automatically before `bbctl run` when it is missing. |
 | `BEEPER_BBCTL` | `bbctl` | `bbctl` binary path. |
+
+`run-bridge.sh` also loads a local `.env` file from the project directory before
+starting `bbctl`. This is the recommended place for deployment-specific values
+such as `LOCAL_MATRIX_HS` or `LOCAL_MATRIX_INSECURE_TLS`; `.env` is git-ignored.
+
+Compatibility note: the public repository, binary, and Beeper network identity
+are named `beeper-matrix-proxy`, but the internal `mxmain` program name remains
+`minibridge` for existing deployments. mautrix uses that internal name as the
+database owner key, so changing it would make an existing database refuse to
+start until manually migrated.
 
 ### Generate Config
 
@@ -229,10 +241,13 @@ cannot resolve.
 
 ### Media
 
-Media is reuploaded instead of blindly forwarding `mxc://` URIs. That keeps
-Beeper and the remote Matrix server from trying to dereference unknown media
-repositories. The bridge can advertise a conservative upload size when the real
-HTTP path has a smaller proxy limit than the homeserver media config claims.
+Media is reuploaded by default instead of blindly forwarding `mxc://` URIs.
+That keeps Beeper and the remote Matrix server from trying to dereference
+unknown media repositories. When bridgev2 direct media is enabled in the
+appservice config, unencrypted remote Matrix media can also be exposed through
+the bridge media proxy using signed generated MXC URIs. The direct download path
+tries Matrix 1.11 authenticated media first, then legacy media endpoints, and
+enforces `LOCAL_MATRIX_DIRECT_MEDIA_MAX_SIZE`.
 
 ### Calls
 
@@ -245,8 +260,9 @@ invites; richer Element Call links are still planned.
 
 | Priority | Work item | Why it matters |
 |---:|---|---|
-| 1 | Direct media proxy support | Fix stale avatars and old media without Synapse 502 failures. |
 | 1 | Safe ghost cleanup tool | Redact old placeholder events without hand-editing databases. |
+| 1 | Persist remote sync token | Avoid dropping missed Matrix messages across process restarts. |
+| 1 | Durable reaction metadata | Keep reaction redaction mapping correct across restarts. |
 | 2 | Better call notice links | Preserve call awareness with direct Element Call / Matrix room links. |
 | 2 | Voice waveform fallback | Make voice notes render reliably when the source client omits waveform data. |
 | 2 | Poll vote/end round-trip | Finish full MSC3381 behavior in both directions. |

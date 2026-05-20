@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
@@ -29,6 +30,8 @@ type MyNetworkClient struct {
 	mx                 *mautrix.Client
 	connectMu          sync.Mutex
 	cancel             context.CancelFunc
+	syncGeneration     uint64
+	reconnectScheduled bool
 	loggedIn           bool
 	sentMu             sync.Mutex
 	sentEvents         map[id.EventID]struct{}
@@ -56,6 +59,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		return
 	}
 	nc.loggedIn = true
+	nc.reconnectScheduled = false
 	nc.login.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateConnected,
 		RemoteID:   nc.login.ID,
@@ -100,20 +104,58 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		})
 	}
 	syncCtx, cancel := context.WithCancel(context.Background())
+	nc.syncGeneration++
+	generation := nc.syncGeneration
 	nc.cancel = cancel
 	go nc.syncRooms(syncCtx)
 	go func() {
-		if err := nc.mx.SyncWithContext(syncCtx); err != nil && !errors.Is(err, context.Canceled) {
-			nc.loggedIn = false
-			nc.login.BridgeState.Send(status.BridgeState{
-				StateEvent: status.StateTransientDisconnect,
-				RemoteID:   nc.login.ID,
-				Error:      status.BridgeStateErrorCode("REMOTE_MATRIX_SYNC_STOPPED"),
-				Reason:     err.Error(),
-			})
-			nc.log.Err(err).Msg("Remote Matrix sync stopped")
-		}
+		nc.handleSyncExit(generation, nc.mx.SyncWithContext(syncCtx))
 	}()
+}
+
+func (nc *MyNetworkClient) handleSyncExit(generation uint64, err error) {
+	nc.connectMu.Lock()
+	if generation != nc.syncGeneration {
+		nc.connectMu.Unlock()
+		return
+	}
+	nc.cancel = nil
+	if err == nil || errors.Is(err, context.Canceled) {
+		nc.connectMu.Unlock()
+		return
+	}
+	nc.loggedIn = false
+	login := nc.login
+	shouldReconnect := !nc.reconnectScheduled
+	if shouldReconnect {
+		nc.reconnectScheduled = true
+	}
+	nc.connectMu.Unlock()
+	if login != nil {
+		login.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateTransientDisconnect,
+			RemoteID:   login.ID,
+			Error:      status.BridgeStateErrorCode("REMOTE_MATRIX_SYNC_STOPPED"),
+			Reason:     err.Error(),
+		})
+	}
+	nc.log.Err(err).Msg("Remote Matrix sync stopped")
+	if shouldReconnect {
+		go nc.reconnectAfterRemoteSyncFailure()
+	}
+}
+
+func (nc *MyNetworkClient) reconnectAfterRemoteSyncFailure() {
+	time.Sleep(30 * time.Second)
+	nc.connectMu.Lock()
+	shouldReconnect := nc.cancel == nil && nc.mx != nil
+	nc.reconnectScheduled = false
+	nc.connectMu.Unlock()
+	if !shouldReconnect {
+		return
+	}
+	nc.log.Info().Msg("Retrying remote Matrix sync after transient failure")
+	nc.Connect(context.Background())
 }
 
 func (nc *MyNetworkClient) refreshLocalMediaConfig(ctx context.Context) {

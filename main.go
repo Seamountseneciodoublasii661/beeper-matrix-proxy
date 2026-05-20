@@ -16,10 +16,13 @@ func main() {
 	connector := &connector.MyConnector{}
 
 	m := mxmain.BridgeMain{
+		// Keep the internal mxmain name stable for existing installations:
+		// mautrix uses it as the database owner key ("megabridge/<name>").
+		// The public bridge/network identity is exposed by the connector.
 		Name:        "minibridge",
-		Description: "A minimal mautrix-go bridge example.",
+		Description: "A Matrix-to-Beeper bridgev2 proxy for private Matrix homeservers.",
 		Version:     "0.1.0",
-		URL:         "",
+		URL:         "https://github.com/Martin-Hausleitner/beeper-matrix-proxy",
 		Connector:   connector,
 	}
 
