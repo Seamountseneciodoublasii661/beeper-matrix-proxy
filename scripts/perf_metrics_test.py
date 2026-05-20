@@ -35,6 +35,11 @@ class PerfMetricsTest(unittest.TestCase):
                     [
                         "synapse burst sync delivered 100/100 messages; send_duration=1.5s sync_duration=20.5ms",
                         "synapse mixed modality sync counts=map[m.room.message:9] msgtypes=map[m.image:1 m.text:2] send_duration=180us sync_duration=3ms",
+                        "synapse multi-room burst sync rooms=2 per_room=5 total=10 send_duration=200ms sync_duration=12ms",
+                        "synapse dual-user sync counts=map[m.room.message:2] msgtypes=map[m.text:2] senders=map[@peer:example:1 @proxy:example:1]",
+                        "synapse media upload/download msgtypes=map[m.file:1] bytes=29",
+                        "synapse poll lifecycle counts=map[org.matrix.msc3381.poll.end:1 org.matrix.msc3381.poll.response:1 org.matrix.msc3381.poll.start:1]",
+                        "synapse ephemeral sync typing=true receipt=true",
                     ]
                 ),
                 encoding="utf-8",
@@ -46,6 +51,12 @@ class PerfMetricsTest(unittest.TestCase):
         self.assertEqual(summary["bursts"][0]["sync_ms"], 20.5)
         self.assertEqual(summary["mixed_modality"]["sync_ms"], 3.0)
         self.assertIn("m.image:1", summary["mixed_modality"]["msgtypes"])
+        self.assertEqual(summary["multi_room"][0]["total"], 10)
+        self.assertIn("@peer:example:1", summary["dual_user"][0]["senders"])
+        self.assertEqual(summary["media"][0]["bytes"], 29)
+        self.assertIn("poll.start:1", summary["poll_lifecycle"][0]["counts"])
+        self.assertTrue(summary["ephemeral"][0]["typing"])
+        self.assertTrue(summary["ephemeral"][0]["receipt"])
 
     def test_check_bench_gates_reports_regressions(self):
         failures = perf_metrics.check_bench_gates(

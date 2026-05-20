@@ -19,6 +19,21 @@ BURST_RE = re.compile(
 MIXED_RE = re.compile(
     r"synapse mixed modality sync counts=(map\[[^\]]+\]) msgtypes=(map\[[^\]]+\]) send_duration=([^ ]+) sync_duration=([^ ]+)"
 )
+MULTI_ROOM_RE = re.compile(
+    r"synapse multi-room burst sync rooms=(\d+) per_room=(\d+) total=(\d+) send_duration=([^ ]+) sync_duration=([^ ]+)"
+)
+DUAL_USER_RE = re.compile(
+    r"synapse dual-user sync counts=(map\[[^\]]+\]) msgtypes=(map\[[^\]]+\]) senders=(map\[[^\]]+\])"
+)
+MEDIA_RE = re.compile(
+    r"synapse media upload/download msgtypes=(map\[[^\]]+\]) bytes=(\d+)"
+)
+POLL_RE = re.compile(
+    r"synapse poll lifecycle counts=(map\[[^\]]+\])"
+)
+EPHEMERAL_RE = re.compile(
+    r"synapse ephemeral sync typing=(true|false) receipt=(true|false)"
+)
 
 DEFAULT_BENCH_GATES = {
     "BenchmarkCloneMessageContent": {"max_ns_per_op_mean": 2000, "max_allocs_per_op_mean": 8},
@@ -109,7 +124,15 @@ def summarize_bench(input_path: str) -> dict[str, dict[str, float | int]]:
 
 
 def summarize_synapse(input_path: str) -> dict[str, object]:
-    summary: dict[str, object] = {"bursts": [], "mixed_modality": None}
+    summary: dict[str, object] = {
+        "bursts": [],
+        "mixed_modality": None,
+        "multi_room": [],
+        "dual_user": [],
+        "media": [],
+        "poll_lifecycle": [],
+        "ephemeral": [],
+    }
     with open(input_path, encoding="utf-8") as f:
         for line in f:
             if match := BURST_RE.search(line):
@@ -131,6 +154,49 @@ def summarize_synapse(input_path: str) -> dict[str, object]:
                     "send_ms": duration_ms(send),
                     "sync_ms": duration_ms(sync),
                 }
+                continue
+            if match := MULTI_ROOM_RE.search(line):
+                rooms, per_room, total, send, sync = match.groups()
+                summary["multi_room"].append(
+                    {
+                        "rooms": int(rooms),
+                        "per_room": int(per_room),
+                        "total": int(total),
+                        "send_ms": duration_ms(send),
+                        "sync_ms": duration_ms(sync),
+                    }
+                )
+                continue
+            if match := DUAL_USER_RE.search(line):
+                counts, msgtypes, senders = match.groups()
+                summary["dual_user"].append(
+                    {
+                        "counts": counts,
+                        "msgtypes": msgtypes,
+                        "senders": senders,
+                    }
+                )
+                continue
+            if match := MEDIA_RE.search(line):
+                msgtypes, bytes_count = match.groups()
+                summary["media"].append(
+                    {
+                        "msgtypes": msgtypes,
+                        "bytes": int(bytes_count),
+                    }
+                )
+                continue
+            if match := POLL_RE.search(line):
+                summary["poll_lifecycle"].append({"counts": match.group(1)})
+                continue
+            if match := EPHEMERAL_RE.search(line):
+                typing, receipt = match.groups()
+                summary["ephemeral"].append(
+                    {
+                        "typing": typing == "true",
+                        "receipt": receipt == "true",
+                    }
+                )
     return summary
 
 

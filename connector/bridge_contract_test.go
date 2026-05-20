@@ -30,6 +30,9 @@ func TestLocalMatrixSyncFilterKeepsBursts(t *testing.T) {
 	if !containsEventType(filter.Room.Timeline.Types, event.EventSticker) {
 		t.Fatal("expected live sync filter to include stickers")
 	}
+	if !containsEventType(filter.Room.Timeline.Types, event.EventUnstablePollResponse) || !containsEventType(filter.Room.Timeline.Types, event.EventUnstablePollEnd) {
+		t.Fatal("expected live sync filter to include full poll lifecycle events")
+	}
 	if filter.Room.Ephemeral == nil || !containsEventType(filter.Room.Ephemeral.Types, event.EphemeralEventTyping) || !containsEventType(filter.Room.Ephemeral.Types, event.EphemeralEventReceipt) {
 		t.Fatalf("expected sync filter to include typing and receipt ephemeral events, got %#v", filter.Room.Ephemeral)
 	}

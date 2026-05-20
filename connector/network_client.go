@@ -326,6 +326,7 @@ func localMatrixSyncFilter() *mautrix.Filter {
 					event.EventRedaction,
 					event.EventUnstablePollStart,
 					event.EventUnstablePollResponse,
+					event.EventUnstablePollEnd,
 					event.CallInvite,
 					event.StateRoomName,
 					event.StateRoomAvatar,

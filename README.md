@@ -271,7 +271,7 @@ Important test coverage:
 |---|---|
 | Sync burst filter, edits, polls, relation rewriting | `connector/bridge_contract_test.go` |
 | Media URLs and upload limits | `connector/media_test.go` |
-| Local Synapse burst and mixed-modality sync E2E | `connector/synapse_e2e_test.go`, `e2e/synapse/run.sh` |
+| Local Synapse burst, multi-room, multi-user, media, poll, ephemeral, and mixed-modality E2E | `connector/synapse_e2e_test.go`, `e2e/synapse/run.sh` |
 
 Run the performance suite:
 
@@ -295,7 +295,7 @@ Key artifacts:
 | `benchmark-summary.json` | Aggregated mean/min/max benchmark metrics. |
 | `metadata.json` | Commit, dirty flag, Go version, platform, and run settings. |
 | `synapse-e2e.txt` | Local Synapse E2E log when `RUN_SYNAPSE_E2E=1`. |
-| `synapse-summary.json` | Parsed burst and mixed-modality E2E timings. |
+| `synapse-summary.json` | Parsed burst, mixed-modality, multi-room, dual-user, media, poll, and ephemeral E2E results. |
 
 Enable performance gates:
 
@@ -323,11 +323,23 @@ RUN_SYNAPSE_E2E=1 LOCAL_SYNAPSE_E2E_BURSTS=10,25,40 ./scripts/perf.sh
 ```
 
 The Synapse suite starts a disposable Docker Synapse using the official
-`matrixdotorg/synapse` image, registers a test user, uploads the bridge's sync
-filter, sends one or more message bursts, verifies that `/sync` contains every
-burst message, and then runs a mixed-modality sync test. It raises Synapse test
-ratelimits in the temporary config so the test measures the bridge/filter
-behavior instead of default homeserver throttling.
+`matrixdotorg/synapse` image, registers primary and peer test users, uploads the
+bridge's sync filter, sends one or more message bursts, verifies that `/sync`
+contains every burst message, and then runs mixed-modality, multi-room,
+dual-user, media upload/download, poll lifecycle, typing, and receipt tests. It
+raises Synapse test ratelimits in the temporary config so the test measures the
+bridge/filter behavior instead of default homeserver throttling.
+
+Run the same E2E matrix against multiple real Synapse containers:
+
+```bash
+RUN_SYNAPSE_E2E=1 \
+LOCAL_SYNAPSE_E2E_SERVER_COUNT=2 \
+LOCAL_SYNAPSE_E2E_BURSTS=10,40 \
+LOCAL_SYNAPSE_E2E_ROOM_COUNT=2 \
+LOCAL_SYNAPSE_E2E_ROOM_BURST=5 \
+./scripts/perf.sh
+```
 
 The live Matrix sync timeline limit defaults to `100` to preserve larger bursts
 without making every incremental `/sync` too heavy. Tune it with

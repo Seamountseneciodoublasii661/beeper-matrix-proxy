@@ -34,6 +34,13 @@ public `main` branch.
 - Performance gates now fail explicitly when requested Synapse E2E summaries are
   missing burst or mixed-modality measurements, and custom gate files deep-merge
   with default gates instead of replacing them wholesale.
+- Multi-Synapse E2E runner support via `LOCAL_SYNAPSE_E2E_SERVER_COUNT`, with
+  primary and peer users registered on every disposable homeserver.
+- Expanded real Synapse E2E coverage for multi-room bursts, dual-user rooms,
+  authenticated media upload/download, poll start/response/end, typing, and read
+  receipt sync.
+- `synapse-summary.json` now parses multi-room, dual-user, media, poll, and
+  ephemeral E2E results in addition to burst and mixed-modality timings.
 
 ### Performance
 

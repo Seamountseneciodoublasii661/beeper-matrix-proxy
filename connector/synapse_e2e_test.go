@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,7 +28,15 @@ type synapseE2EClient struct {
 
 func TestSynapseBurstSyncE2E(t *testing.T) {
 	client := newSynapseE2EClient(t)
-	count := envInt("LOCAL_SYNAPSE_E2E_BURST", 40)
+	for _, count := range envIntList("LOCAL_SYNAPSE_E2E_BURSTS", envInt("LOCAL_SYNAPSE_E2E_BURST", 40)) {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			runSynapseBurstSyncE2E(t, client, count)
+		})
+	}
+}
+
+func runSynapseBurstSyncE2E(t *testing.T, client synapseE2EClient, count int) {
+	t.Helper()
 	if count <= 0 {
 		count = 40
 	}
@@ -120,7 +129,7 @@ func TestSynapseMixedModalitySyncE2E(t *testing.T) {
 	sendDuration := time.Since(start)
 
 	syncStart := time.Now()
-	counts, msgTypes := client.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
+	counts, msgTypes, _ := client.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
 		"m.room.message":                9,
 		"m.sticker":                     1,
 		"m.reaction":                    1,
@@ -142,6 +151,146 @@ func TestSynapseMixedModalitySyncE2E(t *testing.T) {
 	t.Logf("synapse mixed modality sync counts=%v msgtypes=%v send_duration=%s sync_duration=%s", counts, msgTypes, sendDuration, syncDuration)
 }
 
+func TestSynapseMultiRoomBurstE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	roomCount := envInt("LOCAL_SYNAPSE_E2E_ROOM_COUNT", 4)
+	perRoom := envInt("LOCAL_SYNAPSE_E2E_ROOM_BURST", 12)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	filterID := client.uploadFilter(ctx, t)
+	nextBatch := client.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+
+	rooms := make([]id.RoomID, 0, roomCount)
+	start := time.Now()
+	for roomIndex := 0; roomIndex < roomCount; roomIndex++ {
+		roomID := client.createRoom(ctx, t)
+		rooms = append(rooms, roomID)
+		for msgIndex := 0; msgIndex < perRoom; msgIndex++ {
+			client.sendText(ctx, t, roomID, fmt.Sprintf("multi-room-%02d-%02d", roomIndex, msgIndex), msgIndex)
+		}
+	}
+	sendDuration := time.Since(start)
+
+	syncStart := time.Now()
+	got := client.syncUntilRoomBursts(ctx, t, filterID, nextBatch, rooms, perRoom)
+	syncDuration := time.Since(syncStart)
+	for roomID, count := range got {
+		if count != perRoom {
+			t.Fatalf("expected %d messages in %s, got %d across counts=%v", perRoom, roomID, count, got)
+		}
+	}
+	t.Logf("synapse multi-room burst sync rooms=%d per_room=%d total=%d send_duration=%s sync_duration=%s", roomCount, perRoom, roomCount*perRoom, sendDuration, syncDuration)
+}
+
+func TestSynapseDualUserRoomE2E(t *testing.T) {
+	primary := newSynapseE2EClient(t)
+	peer := newSynapseE2EPeerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	filterID := primary.uploadFilter(ctx, t)
+	roomID := primary.createRoom(ctx, t)
+	nextBatch := primary.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+
+	primary.inviteUser(ctx, t, roomID, peer.userID)
+	peer.joinRoom(ctx, t, roomID)
+	peer.sendText(ctx, t, roomID, "peer-message", 0)
+	primary.sendText(ctx, t, roomID, "primary-message", 1)
+
+	counts, msgTypes, senders := primary.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
+		"m.room.message": 2,
+	}, map[string]int{
+		"m.text": 2,
+	})
+	if senders[primary.userID] < 1 || senders[peer.userID] < 1 {
+		t.Fatalf("expected messages from primary and peer users, got senders=%v", senders)
+	}
+	t.Logf("synapse dual-user sync counts=%v msgtypes=%v senders=%v", counts, msgTypes, senders)
+}
+
+func TestSynapseMediaUploadDownloadE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	filterID := client.uploadFilter(ctx, t)
+	roomID := client.createRoom(ctx, t)
+	nextBatch := client.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+
+	uploaded := client.uploadMedia(ctx, t, "e2e.txt", "text/plain", []byte("beeper-matrix-proxy-media-e2e"))
+	client.sendMessageModality(ctx, t, roomID, "m.file", "e2e.txt", map[string]any{
+		"url":      string(uploaded),
+		"filename": "e2e.txt",
+		"info": map[string]any{
+			"mimetype": "text/plain",
+			"size":     29,
+		},
+	})
+	_, msgTypes, _ := client.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
+		"m.room.message": 1,
+	}, map[string]int{
+		"m.file": 1,
+	})
+	downloaded := client.downloadMedia(ctx, t, uploaded)
+	if string(downloaded) != "beeper-matrix-proxy-media-e2e" {
+		t.Fatalf("downloaded media mismatch: %q", downloaded)
+	}
+	t.Logf("synapse media upload/download msgtypes=%v bytes=%d", msgTypes, len(downloaded))
+}
+
+func TestSynapsePollLifecycleE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	filterID := client.uploadFilter(ctx, t)
+	roomID := client.createRoom(ctx, t)
+	nextBatch := client.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+
+	pollID := client.sendPollStart(ctx, t, roomID)
+	client.sendPollResponse(ctx, t, roomID, pollID)
+	client.sendPollEnd(ctx, t, roomID, pollID)
+	counts, _, _ := client.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
+		"org.matrix.msc3381.poll.start":    1,
+		"org.matrix.msc3381.poll.response": 1,
+		"org.matrix.msc3381.poll.end":      1,
+	}, nil)
+	t.Logf("synapse poll lifecycle counts=%v", counts)
+}
+
+func TestSynapseTypingReceiptE2E(t *testing.T) {
+	primary := newSynapseE2EClient(t)
+	peer := newSynapseE2EPeerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	filterID := primary.uploadFilter(ctx, t)
+	roomID := primary.createRoom(ctx, t)
+	nextBatch := primary.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+	primary.inviteUser(ctx, t, roomID, peer.userID)
+	peer.joinRoom(ctx, t, roomID)
+	eventID := peer.sendText(ctx, t, roomID, "receipt-target", 0)
+	peer.sendTyping(ctx, t, roomID, true, 5000)
+	peer.sendReceipt(ctx, t, roomID, eventID)
+
+	gotTyping, gotReceipt := primary.syncUntilEphemeral(ctx, t, filterID, nextBatch, roomID)
+	if !gotTyping || !gotReceipt {
+		t.Fatalf("expected typing and receipt ephemeral events, got typing=%v receipt=%v", gotTyping, gotReceipt)
+	}
+	t.Logf("synapse ephemeral sync typing=%v receipt=%v", gotTyping, gotReceipt)
+}
+
 func newSynapseE2EClient(t *testing.T) synapseE2EClient {
 	t.Helper()
 	hs := os.Getenv("LOCAL_SYNAPSE_E2E_HS")
@@ -149,6 +298,22 @@ func newSynapseE2EClient(t *testing.T) synapseE2EClient {
 	token := os.Getenv("LOCAL_SYNAPSE_E2E_ACCESS_TOKEN")
 	if hs == "" || userID == "" || token == "" {
 		t.Skip("set LOCAL_SYNAPSE_E2E_HS, LOCAL_SYNAPSE_E2E_USER_ID and LOCAL_SYNAPSE_E2E_ACCESS_TOKEN to run the Synapse E2E test")
+	}
+	return synapseE2EClient{
+		baseURL:     hs,
+		userID:      userID,
+		accessToken: token,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func newSynapseE2EPeerClient(t *testing.T) synapseE2EClient {
+	t.Helper()
+	hs := os.Getenv("LOCAL_SYNAPSE_E2E_HS")
+	userID := os.Getenv("LOCAL_SYNAPSE_E2E_PEER_USER_ID")
+	token := os.Getenv("LOCAL_SYNAPSE_E2E_PEER_ACCESS_TOKEN")
+	if hs == "" || userID == "" || token == "" {
+		t.Skip("set LOCAL_SYNAPSE_E2E_PEER_USER_ID and LOCAL_SYNAPSE_E2E_PEER_ACCESS_TOKEN to run multi-user Synapse E2E tests")
 	}
 	return synapseE2EClient{
 		baseURL:     hs,
@@ -261,6 +426,30 @@ func (c synapseE2EClient) sendPollStart(ctx context.Context, t *testing.T, roomI
 	})
 }
 
+func (c synapseE2EClient) sendPollResponse(ctx context.Context, t *testing.T, roomID id.RoomID, target id.EventID) id.EventID {
+	t.Helper()
+	return c.sendRoomEvent(ctx, t, roomID, "org.matrix.msc3381.poll.response", "perf-poll-response", map[string]any{
+		"org.matrix.msc3381.poll.response": map[string]any{
+			"answers": []string{"yes"},
+		},
+		"m.relates_to": map[string]any{
+			"rel_type": "m.reference",
+			"event_id": string(target),
+		},
+	})
+}
+
+func (c synapseE2EClient) sendPollEnd(ctx context.Context, t *testing.T, roomID id.RoomID, target id.EventID) id.EventID {
+	t.Helper()
+	return c.sendRoomEvent(ctx, t, roomID, "org.matrix.msc3381.poll.end", "perf-poll-end", map[string]any{
+		"org.matrix.msc3381.poll.end": map[string]any{},
+		"m.relates_to": map[string]any{
+			"rel_type": "m.reference",
+			"event_id": string(target),
+		},
+	})
+}
+
 func (c synapseE2EClient) sendCallInvite(ctx context.Context, t *testing.T, roomID id.RoomID) id.EventID {
 	t.Helper()
 	return c.sendRoomEvent(ctx, t, roomID, "m.call.invite", "perf-call", map[string]any{
@@ -272,6 +461,97 @@ func (c synapseE2EClient) sendCallInvite(ctx context.Context, t *testing.T, room
 			"sdp":  "v=0\r\n",
 		},
 	})
+}
+
+func (c synapseE2EClient) inviteUser(ctx context.Context, t *testing.T, roomID id.RoomID, userID string) {
+	t.Helper()
+	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/invite", url.PathEscape(string(roomID)))
+	c.doJSON(ctx, t, http.MethodPost, path, map[string]any{"user_id": userID}, nil)
+}
+
+func (c synapseE2EClient) joinRoom(ctx context.Context, t *testing.T, roomID id.RoomID) {
+	t.Helper()
+	path := fmt.Sprintf("/_matrix/client/v3/join/%s", url.PathEscape(string(roomID)))
+	c.doJSON(ctx, t, http.MethodPost, path, map[string]any{}, nil)
+}
+
+func (c synapseE2EClient) sendTyping(ctx context.Context, t *testing.T, roomID id.RoomID, typing bool, timeoutMS int) {
+	t.Helper()
+	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/typing/%s", url.PathEscape(string(roomID)), url.PathEscape(c.userID))
+	c.doJSON(ctx, t, http.MethodPut, path, map[string]any{"typing": typing, "timeout": timeoutMS}, nil)
+}
+
+func (c synapseE2EClient) sendReceipt(ctx context.Context, t *testing.T, roomID id.RoomID, eventID id.EventID) {
+	t.Helper()
+	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/receipt/m.read/%s", url.PathEscape(string(roomID)), url.PathEscape(string(eventID)))
+	c.doJSON(ctx, t, http.MethodPost, path, map[string]any{}, nil)
+}
+
+func (c synapseE2EClient) uploadMedia(ctx context.Context, t *testing.T, filename, mimeType string, data []byte) id.ContentURIString {
+	t.Helper()
+	values := url.Values{}
+	values.Set("filename", filename)
+	path := "/_matrix/media/v3/upload?" + values.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	req.Header.Set("Content-Type", mimeType)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		t.Fatalf("media upload returned HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		ContentURI id.ContentURIString `json:"content_uri"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ContentURI == "" {
+		t.Fatal("media upload did not return content_uri")
+	}
+	return out.ContentURI
+}
+
+func (c synapseE2EClient) downloadMedia(ctx context.Context, t *testing.T, contentURI id.ContentURIString) []byte {
+	t.Helper()
+	parsed, err := contentURI.Parse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{
+		fmt.Sprintf("/_matrix/client/v1/media/download/%s/%s", url.PathEscape(parsed.Homeserver), url.PathEscape(parsed.FileID)),
+		fmt.Sprintf("/_matrix/media/v3/download/%s/%s", url.PathEscape(parsed.Homeserver), url.PathEscape(parsed.FileID)),
+		fmt.Sprintf("/_matrix/media/r0/download/%s/%s", url.PathEscape(parsed.Homeserver), url.PathEscape(parsed.FileID)),
+	}
+	var lastStatus int
+	for _, path := range paths {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			return data
+		}
+		lastStatus = resp.StatusCode
+	}
+	t.Fatalf("media download returned HTTP %d for all media endpoints", lastStatus)
+	return nil
 }
 
 func (c synapseE2EClient) sendTopic(ctx context.Context, t *testing.T, roomID id.RoomID) {
@@ -346,10 +626,50 @@ func (c synapseE2EClient) syncUntilBurstMessages(ctx context.Context, t *testing
 	return len(seen)
 }
 
-func (c synapseE2EClient) syncUntilEventTypes(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, want map[string]int, wantMsgTypes map[string]int) (map[string]int, map[string]int) {
+func (c synapseE2EClient) syncUntilRoomBursts(ctx context.Context, t *testing.T, filterID, since string, rooms []id.RoomID, wantPerRoom int) map[id.RoomID]int {
+	t.Helper()
+	seen := make(map[id.RoomID]map[string]struct{}, len(rooms))
+	for _, roomID := range rooms {
+		seen[roomID] = make(map[string]struct{}, wantPerRoom)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := c.syncOnce(ctx, t, filterID, since, 5*time.Second)
+		if resp.NextBatch != "" {
+			since = resp.NextBatch
+		}
+		for _, roomID := range rooms {
+			if room := resp.Rooms.Join[roomID]; room != nil {
+				for _, evt := range room.Timeline.Events {
+					if evt.Type == "m.room.message" && strings.HasPrefix(evt.Content.Body, "multi-room-") {
+						seen[roomID][evt.Content.Body] = struct{}{}
+					}
+				}
+			}
+		}
+		allSeen := true
+		for _, roomID := range rooms {
+			if len(seen[roomID]) < wantPerRoom {
+				allSeen = false
+				break
+			}
+		}
+		if allSeen {
+			break
+		}
+	}
+	counts := make(map[id.RoomID]int, len(rooms))
+	for _, roomID := range rooms {
+		counts[roomID] = len(seen[roomID])
+	}
+	return counts
+}
+
+func (c synapseE2EClient) syncUntilEventTypes(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, want map[string]int, wantMsgTypes map[string]int) (map[string]int, map[string]int, map[string]int) {
 	t.Helper()
 	counts := make(map[string]int, len(want))
 	msgTypes := make(map[string]int, len(wantMsgTypes))
+	senders := make(map[string]int)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		resp := c.syncOnce(ctx, t, filterID, since, 5*time.Second)
@@ -359,13 +679,16 @@ func (c synapseE2EClient) syncUntilEventTypes(ctx context.Context, t *testing.T,
 		if room := resp.Rooms.Join[roomID]; room != nil {
 			for _, evt := range room.Timeline.Events {
 				counts[evt.Type]++
+				if evt.Sender != "" {
+					senders[evt.Sender]++
+				}
 				if evt.Type == "m.room.message" && evt.Content.MsgType != "" {
 					msgTypes[evt.Content.MsgType]++
 				}
 			}
 		}
 		if hasEventTypeCounts(counts, want) && hasEventTypeCounts(msgTypes, wantMsgTypes) {
-			return counts, msgTypes
+			return counts, msgTypes, senders
 		}
 	}
 	for eventType, count := range want {
@@ -378,7 +701,33 @@ func (c synapseE2EClient) syncUntilEventTypes(ctx context.Context, t *testing.T,
 			t.Fatalf("expected at least %d %s msgtypes, got %d in msgtypes=%v", count, msgType, msgTypes[msgType], msgTypes)
 		}
 	}
-	return counts, msgTypes
+	return counts, msgTypes, senders
+}
+
+func (c synapseE2EClient) syncUntilEphemeral(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID) (bool, bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var gotTyping, gotReceipt bool
+	for time.Now().Before(deadline) {
+		resp := c.syncOnce(ctx, t, filterID, since, 5*time.Second)
+		if resp.NextBatch != "" {
+			since = resp.NextBatch
+		}
+		if room := resp.Rooms.Join[roomID]; room != nil {
+			for _, evt := range room.Ephemeral.Events {
+				switch evt.Type {
+				case "m.typing":
+					gotTyping = true
+				case "m.receipt":
+					gotReceipt = true
+				}
+			}
+		}
+		if gotTyping && gotReceipt {
+			return true, true
+		}
+	}
+	return gotTyping, gotReceipt
 }
 
 func hasEventTypeCounts(counts, want map[string]int) bool {
@@ -429,9 +778,15 @@ type synapseSyncResponse struct {
 	NextBatch string `json:"next_batch"`
 	Rooms     struct {
 		Join map[id.RoomID]*struct {
+			Ephemeral struct {
+				Events []struct {
+					Type string `json:"type"`
+				} `json:"events"`
+			} `json:"ephemeral"`
 			Timeline struct {
 				Events []struct {
 					Type    string `json:"type"`
+					Sender  string `json:"sender"`
 					Content struct {
 						Body    string `json:"body"`
 						MsgType string `json:"msgtype"`
@@ -440,4 +795,26 @@ type synapseSyncResponse struct {
 			} `json:"timeline"`
 		} `json:"join"`
 	} `json:"rooms"`
+}
+
+func envIntList(name string, fallback int) []int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return []int{fallback}
+	}
+	var out []int
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		value, err := strconv.Atoi(part)
+		if err == nil {
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return []int{fallback}
+	}
+	return out
 }
