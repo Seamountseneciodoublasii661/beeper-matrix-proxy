@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -173,7 +174,7 @@ func newLocalMatrixClient(userID, accessToken string) (*mautrix.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if os.Getenv("LOCAL_MATRIX_INSECURE_TLS") != "0" {
+	if insecureLocalTLS() {
 		cli.Client = &http.Client{
 			Timeout: 180 * time.Second,
 			Transport: &http.Transport{
@@ -182,6 +183,15 @@ func newLocalMatrixClient(userID, accessToken string) (*mautrix.Client, error) {
 		}
 	}
 	return cli, nil
+}
+
+func insecureLocalTLS() bool {
+	switch strings.ToLower(os.Getenv("LOCAL_MATRIX_INSECURE_TLS")) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *MyConnector) resyncRoom(ctx context.Context, login *bridgev2.UserLogin, roomID id.RoomID, info *bridgev2.ChatInfo) {

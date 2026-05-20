@@ -55,7 +55,7 @@ func (nc *MyNetworkClient) QueueRemoteMessage(ctx context.Context, portalID netw
 }
 
 func (nc *MyNetworkClient) handleLocalMatrixEvent(ctx context.Context, evt *event.Event) {
-	if evt == nil || evt.Type != event.EventMessage || evt.RoomID == "" || evt.ID == "" {
+	if evt == nil || (evt.Type != event.EventMessage && evt.Type != event.EventSticker) || evt.RoomID == "" || evt.ID == "" {
 		return
 	}
 	if nc.consumeSentEvent(evt.ID) {
@@ -86,12 +86,16 @@ func (nc *MyNetworkClient) handleLocalMatrixEvent(ctx context.Context, evt *even
 		ID:   networkid.MessageID(evt.ID),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data event.Content) (*bridgev2.ConvertedMessage, error) {
 			content := cloneMessageContent(messageContentFromEventContent(data))
+			replyTo, threadRoot := remoteRelationTargets(content)
+			removeRemoteRelationTargets(content)
 			if err := nc.reuploadContentToBeeper(ctx, intent, content); err != nil {
 				return nil, err
 			}
 			return &bridgev2.ConvertedMessage{
+				ReplyTo:    replyTo,
+				ThreadRoot: threadRoot,
 				Parts: []*bridgev2.ConvertedMessagePart{{
-					Type:    event.EventMessage,
+					Type:    evt.Type,
 					Content: content,
 				}},
 			}, nil
@@ -191,6 +195,15 @@ func (nc *MyNetworkClient) handleLocalMatrixReaction(ctx context.Context, evt *e
 			RemoteEventID: string(evt.ID),
 		},
 	})
+	nc.rememberRemoteReaction(evt.ID, remoteReaction{
+		RoomID:        evt.RoomID,
+		TargetMessage: networkid.MessageID(target),
+		Sender:        networkid.UserID(evt.Sender),
+		IsFromMe:      evt.Sender == nc.mx.UserID,
+		EmojiID:       networkid.EmojiID(emoji),
+		Emoji:         emoji,
+		Timestamp:     eventTimestamp(evt),
+	})
 }
 
 func (nc *MyNetworkClient) handleLocalMatrixRedaction(ctx context.Context, evt *event.Event) {
@@ -208,6 +221,24 @@ func (nc *MyNetworkClient) handleLocalMatrixRedaction(ctx context.Context, evt *
 	if target == "" {
 		return
 	}
+	if reaction, ok := nc.popRemoteReaction(target); ok {
+		nc.bridge.QueueRemoteEvent(nc.login, &simplevent.Reaction{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventReactionRemove,
+				PortalKey: networkid.PortalKey{ID: networkid.PortalID(reaction.RoomID), Receiver: nc.login.ID},
+				Sender: bridgev2.EventSender{
+					Sender:   reaction.Sender,
+					IsFromMe: reaction.IsFromMe,
+				},
+				CreatePortal: true,
+				Timestamp:    eventTimestamp(evt),
+			},
+			TargetMessage: reaction.TargetMessage,
+			EmojiID:       reaction.EmojiID,
+			Emoji:         reaction.Emoji,
+		})
+		return
+	}
 	nc.bridge.QueueRemoteEvent(nc.login, &simplevent.MessageRemove{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventMessageRemove,
@@ -221,6 +252,44 @@ func (nc *MyNetworkClient) handleLocalMatrixRedaction(ctx context.Context, evt *
 		},
 		TargetMessage: networkid.MessageID(target),
 	})
+}
+
+type remoteReaction struct {
+	RoomID        id.RoomID
+	TargetMessage networkid.MessageID
+	Sender        networkid.UserID
+	IsFromMe      bool
+	EmojiID       networkid.EmojiID
+	Emoji         string
+	Timestamp     time.Time
+}
+
+func (nc *MyNetworkClient) rememberRemoteReaction(eventID id.EventID, reaction remoteReaction) {
+	if eventID == "" {
+		return
+	}
+	nc.reactionMu.Lock()
+	defer nc.reactionMu.Unlock()
+	if nc.remoteReactions == nil {
+		nc.remoteReactions = make(map[id.EventID]remoteReaction)
+	}
+	nc.remoteReactions[eventID] = reaction
+}
+
+func (nc *MyNetworkClient) popRemoteReaction(eventID id.EventID) (remoteReaction, bool) {
+	if eventID == "" {
+		return remoteReaction{}, false
+	}
+	nc.reactionMu.Lock()
+	defer nc.reactionMu.Unlock()
+	if nc.remoteReactions == nil {
+		return remoteReaction{}, false
+	}
+	reaction, ok := nc.remoteReactions[eventID]
+	if ok {
+		delete(nc.remoteReactions, eventID)
+	}
+	return reaction, ok
 }
 
 func (nc *MyNetworkClient) handleLocalMatrixPoll(ctx context.Context, evt *event.Event) {
@@ -253,6 +322,45 @@ func (nc *MyNetworkClient) handleLocalMatrixPollResponse(ctx context.Context, ev
 	nc.queueLocalMatrixRawEvent(ctx, evt, event.EventUnstablePollResponse, rawContentFromParsed(resp, nil))
 }
 
+func (nc *MyNetworkClient) handleLocalMatrixCallInvite(ctx context.Context, evt *event.Event) {
+	if evt == nil || evt.Type != event.CallInvite || evt.RoomID == "" || evt.ID == "" {
+		return
+	}
+	if nc.consumeSentEvent(evt.ID) {
+		return
+	}
+	body := callNoticeBody(evt.RoomID)
+	nc.bridge.QueueRemoteEvent(nc.login, &simplevent.Message[string]{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventMessage,
+			PortalKey: networkid.PortalKey{ID: networkid.PortalID(evt.RoomID), Receiver: nc.login.ID},
+			Sender: bridgev2.EventSender{
+				Sender:   networkid.UserID(evt.Sender),
+				IsFromMe: evt.Sender == nc.mx.UserID,
+			},
+			CreatePortal: true,
+			Timestamp:    eventTimestamp(evt),
+		},
+		Data: body,
+		ID:   networkid.MessageID("call-notice:" + string(evt.ID)),
+		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data string) (*bridgev2.ConvertedMessage, error) {
+			return &bridgev2.ConvertedMessage{
+				Parts: []*bridgev2.ConvertedMessagePart{{
+					Type: event.EventMessage,
+					Content: &event.MessageEventContent{
+						MsgType: event.MsgNotice,
+						Body:    data,
+					},
+				}},
+			}, nil
+		},
+	})
+}
+
+func callNoticeBody(roomID id.RoomID) string {
+	return fmt.Sprintf("Matrix call started in %s. Open this room in your Matrix client or Element Call to join.", roomID)
+}
+
 func cleanEditContentForBeeper(content *event.MessageEventContent) *event.MessageEventContent {
 	if content == nil {
 		return nil
@@ -272,6 +380,32 @@ func cleanEditContentForBeeper(content *event.MessageEventContent) *event.Messag
 	cleaned.NewContent = nil
 	cleaned.RelatesTo = nil
 	return cleaned
+}
+
+func remoteRelationTargets(content *event.MessageEventContent) (*networkid.MessageOptionalPartID, *networkid.MessageID) {
+	if content == nil || content.RelatesTo == nil {
+		return nil, nil
+	}
+	var replyTo *networkid.MessageOptionalPartID
+	if replyID := content.RelatesTo.GetReplyTo(); replyID != "" {
+		replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(replyID)}
+	}
+	var threadRoot *networkid.MessageID
+	if content.RelatesTo.Type == event.RelThread && content.RelatesTo.EventID != "" {
+		root := networkid.MessageID(content.RelatesTo.EventID)
+		threadRoot = &root
+	}
+	return replyTo, threadRoot
+}
+
+func removeRemoteRelationTargets(content *event.MessageEventContent) {
+	if content == nil || content.RelatesTo == nil {
+		return
+	}
+	if content.RelatesTo.GetReplyTo() == "" && !(content.RelatesTo.Type == event.RelThread && content.RelatesTo.EventID != "") {
+		return
+	}
+	content.RelatesTo = nil
 }
 
 func stripMatrixEditFallbackPrefix(body string) string {

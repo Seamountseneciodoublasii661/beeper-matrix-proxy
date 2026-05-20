@@ -36,6 +36,10 @@ type MyNetworkClient struct {
 	badAvatars         map[id.ContentURIString]struct{}
 	mediaMu            sync.RWMutex
 	localMaxUploadSize int64
+	typingMu           sync.Mutex
+	remoteTyping       map[id.RoomID]map[id.UserID]struct{}
+	reactionMu         sync.Mutex
+	remoteReactions    map[id.EventID]remoteReaction
 }
 
 func (nc *MyNetworkClient) Connect(ctx context.Context) {
@@ -75,6 +79,15 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		})
 		syncer.OnEventType(event.EventUnstablePollResponse, func(ctx context.Context, evt *event.Event) {
 			nc.handleLocalMatrixPollResponse(ctx, evt)
+		})
+		syncer.OnEventType(event.CallInvite, func(ctx context.Context, evt *event.Event) {
+			nc.handleLocalMatrixCallInvite(ctx, evt)
+		})
+		syncer.OnEventType(event.EphemeralEventTyping, func(ctx context.Context, evt *event.Event) {
+			nc.handleLocalMatrixTyping(ctx, evt)
+		})
+		syncer.OnEventType(event.EphemeralEventReceipt, func(ctx context.Context, evt *event.Event) {
+			nc.handleLocalMatrixReceipt(ctx, evt)
 		})
 		syncer.OnEventType(event.StateRoomName, func(ctx context.Context, evt *event.Event) {
 			nc.resyncLocalRoomInfo(ctx, evt.RoomID)
@@ -143,16 +156,24 @@ func localMatrixSyncFilter() *mautrix.Filter {
 		AccountData: &mautrix.FilterPart{Limit: 1},
 		Room: &mautrix.RoomFilter{
 			AccountData: &mautrix.FilterPart{Limit: 1},
-			Ephemeral:   &mautrix.FilterPart{Limit: 1},
-			State:       &mautrix.FilterPart{Limit: 20},
+			Ephemeral: &mautrix.FilterPart{
+				Limit: 20,
+				Types: []event.Type{
+					event.EphemeralEventTyping,
+					event.EphemeralEventReceipt,
+				},
+			},
+			State: &mautrix.FilterPart{Limit: 20},
 			Timeline: &mautrix.FilterPart{
 				Limit: 50,
 				Types: []event.Type{
 					event.EventMessage,
+					event.EventSticker,
 					event.EventReaction,
 					event.EventRedaction,
 					event.EventUnstablePollStart,
 					event.EventUnstablePollResponse,
+					event.CallInvite,
 					event.StateRoomName,
 					event.StateRoomAvatar,
 					event.StateTopic,

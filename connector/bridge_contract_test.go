@@ -17,6 +17,12 @@ func TestLocalMatrixSyncFilterKeepsBursts(t *testing.T) {
 	if got := filter.Room.Timeline.Limit; got < 50 {
 		t.Fatalf("expected timeline limit to preserve bursts, got %d", got)
 	}
+	if !containsEventType(filter.Room.Timeline.Types, event.EventSticker) {
+		t.Fatal("expected live sync filter to include stickers")
+	}
+	if filter.Room.Ephemeral == nil || !containsEventType(filter.Room.Ephemeral.Types, event.EphemeralEventTyping) || !containsEventType(filter.Room.Ephemeral.Types, event.EphemeralEventReceipt) {
+		t.Fatalf("expected sync filter to include typing and receipt ephemeral events, got %#v", filter.Room.Ephemeral)
+	}
 }
 
 func TestCleanEditContentUsesNewContentWithoutLegacyPrefix(t *testing.T) {
@@ -98,4 +104,49 @@ func TestRewriteContentRelationsForLocalMatrixUsesRemoteIDs(t *testing.T) {
 	if got := content.RelatesTo.EventID; got != id.EventID(threadRoot.ID) {
 		t.Fatalf("expected thread root %s, got %s", threadRoot.ID, got)
 	}
+}
+
+func TestInsecureLocalTLSRequiresExplicitOptIn(t *testing.T) {
+	t.Setenv("LOCAL_MATRIX_INSECURE_TLS", "")
+	if insecureLocalTLS() {
+		t.Fatal("expected TLS verification to be enabled by default")
+	}
+	t.Setenv("LOCAL_MATRIX_INSECURE_TLS", "1")
+	if !insecureLocalTLS() {
+		t.Fatal("expected explicit opt-in to allow insecure TLS")
+	}
+}
+
+func TestRemoteRelationTargetsForBeeper(t *testing.T) {
+	content := &event.MessageEventContent{
+		MsgType: event.MsgText,
+		Body:    "reply",
+		RelatesTo: &event.RelatesTo{
+			InReplyTo: &event.InReplyTo{EventID: id.EventID("$remote-reply:matrix.example.com")},
+			Type:      event.RelThread,
+			EventID:   id.EventID("$remote-thread:matrix.example.com"),
+		},
+	}
+
+	replyTo, threadRoot := remoteRelationTargets(content)
+	removeRemoteRelationTargets(content)
+
+	if replyTo == nil || replyTo.MessageID != networkid.MessageID("$remote-reply:matrix.example.com") {
+		t.Fatalf("expected remote reply target, got %#v", replyTo)
+	}
+	if threadRoot == nil || *threadRoot != networkid.MessageID("$remote-thread:matrix.example.com") {
+		t.Fatalf("expected remote thread root, got %#v", threadRoot)
+	}
+	if content.RelatesTo != nil {
+		t.Fatalf("expected raw remote relates_to to be removed, got %#v", content.RelatesTo)
+	}
+}
+
+func containsEventType(types []event.Type, needle event.Type) bool {
+	for _, item := range types {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }

@@ -85,6 +85,8 @@ func (nc *MyNetworkClient) backfillMessageFromEvent(ctx context.Context, evt *ev
 	if content == nil {
 		return nil
 	}
+	replyTo, threadRoot := remoteRelationTargets(content)
+	removeRemoteRelationTargets(content)
 	if nc.bridge != nil && nc.bridge.Bot != nil {
 		if err := nc.reuploadContentToBeeper(ctx, nc.bridge.Bot, content); err != nil {
 			nc.log.Warn().
@@ -97,6 +99,8 @@ func (nc *MyNetworkClient) backfillMessageFromEvent(ctx context.Context, evt *ev
 	}
 	return &bridgev2.BackfillMessage{
 		ConvertedMessage: &bridgev2.ConvertedMessage{
+			ReplyTo:    replyTo,
+			ThreadRoot: threadRoot,
 			Parts: []*bridgev2.ConvertedMessagePart{{
 				Type:    evt.Type,
 				Content: content,

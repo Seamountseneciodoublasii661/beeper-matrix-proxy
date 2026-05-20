@@ -54,6 +54,8 @@ Beeper during testing:
 - message, edit, reply, and relation ID rewriting
 - Beeper-compatible poll fallback normalization
 - media reupload between homeservers
+- live typing notifications and read receipts
+- Matrix call invites bridged as safe notices
 - conservative media size capabilities to avoid proxy-side HTTP 413 failures
 
 The remaining work is mostly around completeness: direct media proxying, richer
@@ -88,8 +90,8 @@ Legend:
 | Polls | Partial | Matrix -> Beeper | Regression test + log-level E2E | Poll starts are normalized with MSC1767 text fallbacks; votes/end need E2E tests. |
 | Backfill / history | Partial | Matrix -> Beeper | Code path | Backfill APIs exist; safe placeholder cleanup is intentionally separate. |
 | Avatars | Partial | Matrix -> Beeper | Code path | Downloadable avatars work; stale media needs direct-media proxying. |
-| Typing notifications | Planned | Both | Not implemented | Needs ephemeral event wiring. |
-| Read receipts | Planned | Both | Not implemented | Needs receipt mapping and rate limiting. |
+| Typing notifications | Supported | Both | Regression test + code path | Beeper typing is sent to remote Matrix; remote Matrix typing is queued back to Beeper. |
+| Read receipts | Supported | Both | Code path | Exact Beeper receipts are sent to remote Matrix; remote Matrix receipts are queued to Beeper. |
 | Native audio/video calls | Not supported | Both | Intentionally hidden | Custom bridges should emit call notices/links instead of fake native call UI. |
 | End-to-end encryption | Planned | Both | Not implemented as a product feature | Needs a separate device, key, and trust model design. |
 
@@ -153,11 +155,12 @@ Optional environment variables:
 | Variable | Default | Purpose |
 |---|---:|---|
 | `LOCAL_MATRIX_HS` | `https://matrix.example.com` | Remote Matrix homeserver used for user login and sync. |
-| `LOCAL_MATRIX_INSECURE_TLS` | enabled unless set to `0` | Allows self-signed or private TLS during development. |
+| `LOCAL_MATRIX_INSECURE_TLS` | disabled | Set to `1`, `true`, or `yes` only for self-signed/private TLS during development. |
 | `LOCAL_MATRIX_INITIAL_BACKFILL_LIMIT` | `0` | Initial history import limit. |
 | `LOCAL_MATRIX_MAX_UPLOAD_SIZE` | remote media config | Caps the size advertised to Beeper when a proxy has a smaller real limit. |
 | `BEEPER_MATRIX_PROXY_DIR` | current directory | Directory used by `run-bridge.sh`. |
 | `BEEPER_MATRIX_PROXY_BINARY` | `./beeper-matrix-proxy` | Binary used by `run-bridge.sh`. |
+| `BEEPER_BRIDGE_NAME` | `sh-vcvm-matrix` | Bridge registration name passed to `bbctl run`. The default preserves the existing local test registration; set it to `beeper-matrix-proxy` for a fresh public-name registration. |
 | `BEEPER_BBCTL` | `bbctl` | `bbctl` binary path. |
 
 ### Generate Config
@@ -234,7 +237,8 @@ HTTP path has a smaller proxy limit than the homeserver media config claims.
 
 Native audio/video calls are intentionally not exposed as a supported capability.
 The safe custom-bridge behavior is to convert incoming call events into
-`m.notice` messages with an external join link. That fallback is planned.
+`m.notice` messages. The bridge already emits a safe notice for Matrix call
+invites; richer Element Call links are still planned.
 
 ## Roadmap
 
@@ -242,11 +246,9 @@ The safe custom-bridge behavior is to convert incoming call events into
 |---:|---|---|
 | 1 | Direct media proxy support | Fix stale avatars and old media without Synapse 502 failures. |
 | 1 | Safe ghost cleanup tool | Redact old placeholder events without hand-editing databases. |
-| 2 | Call notices | Preserve call awareness without pretending Beeper has native custom-bridge calls. |
+| 2 | Better call notice links | Preserve call awareness with direct Element Call / Matrix room links. |
 | 2 | Voice waveform fallback | Make voice notes render reliably when the source client omits waveform data. |
 | 2 | Poll vote/end round-trip | Finish full MSC3381 behavior in both directions. |
-| 3 | Typing notifications | Improve real-time feel. |
-| 3 | Read receipts | Improve parity with normal Beeper rooms. |
 | 3 | Optional GIF transcoding | Reduce large GIF upload failures and improve autoplay behavior. |
 
 ## Safety
