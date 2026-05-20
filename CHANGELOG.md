@@ -41,6 +41,13 @@ public `main` branch.
   receipt sync.
 - `synapse-summary.json` now parses multi-room, dual-user, media, poll, and
   ephemeral E2E results in addition to burst and mixed-modality timings.
+- Real Synapse E2E coverage for HTTP 413 upload-limit enforcement, room
+  profile state (`m.room.name`, `m.room.topic`, `m.room.avatar`), and
+  reply/thread relation payloads.
+- Optional parallel multi-homeserver test execution with
+  `LOCAL_SYNAPSE_E2E_PARALLEL=1`.
+- `synapse-summary.json` now also parses upload-limit, room-state profile, and
+  relation E2E probes.
 
 ### Performance
 

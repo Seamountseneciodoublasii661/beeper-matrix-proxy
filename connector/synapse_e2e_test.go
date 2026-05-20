@@ -245,6 +245,67 @@ func TestSynapseMediaUploadDownloadE2E(t *testing.T) {
 	t.Logf("synapse media upload/download msgtypes=%v bytes=%d", msgTypes, len(downloaded))
 }
 
+func TestSynapseUploadLimitE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	small := bytes.Repeat([]byte("s"), 1024)
+	large := bytes.Repeat([]byte("l"), 2*1024*1024)
+	if status := client.uploadMediaStatus(ctx, t, "small.bin", "application/octet-stream", small); status < 200 || status >= 300 {
+		t.Fatalf("expected small upload to pass, got HTTP %d", status)
+	}
+	status := client.uploadMediaStatus(ctx, t, "too-large.bin", "application/octet-stream", large)
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected oversized upload to return HTTP 413, got HTTP %d", status)
+	}
+	t.Logf("synapse upload limit small_bytes=%d large_bytes=%d oversized_status=%d", len(small), len(large), status)
+}
+
+func TestSynapseRoomStateProfileE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	filterID := client.uploadFilter(ctx, t)
+	roomID := client.createRoom(ctx, t)
+	nextBatch := client.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+
+	avatar := client.uploadMedia(ctx, t, "avatar.png", "image/png", tinyPNG())
+	client.sendName(ctx, t, roomID, "state-profile-name")
+	client.sendTopic(ctx, t, roomID)
+	client.sendAvatar(ctx, t, roomID, avatar)
+	counts, _, _ := client.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
+		"m.room.name":   1,
+		"m.room.topic":  1,
+		"m.room.avatar": 1,
+	}, nil)
+	t.Logf("synapse room state profile counts=%v", counts)
+}
+
+func TestSynapseRelationsE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	filterID := client.uploadFilter(ctx, t)
+	roomID := client.createRoom(ctx, t)
+	nextBatch := client.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+
+	root := client.sendText(ctx, t, roomID, "relation-root", 0)
+	client.sendReply(ctx, t, roomID, root)
+	client.sendThreadReply(ctx, t, roomID, root)
+	replySeen, threadSeen := client.syncUntilRelations(ctx, t, filterID, nextBatch, roomID, root)
+	if !replySeen || !threadSeen {
+		t.Fatalf("expected reply and thread relations, got reply=%v thread=%v", replySeen, threadSeen)
+	}
+	t.Logf("synapse relations reply=%v thread=%v", replySeen, threadSeen)
+}
+
 func TestSynapsePollLifecycleE2E(t *testing.T) {
 	client := newSynapseE2EClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -356,6 +417,34 @@ func (c synapseE2EClient) sendText(ctx context.Context, t *testing.T, roomID id.
 	return c.sendRoomEvent(ctx, t, roomID, "m.room.message", fmt.Sprintf("perf-%d", index), map[string]any{
 		"msgtype": "m.text",
 		"body":    body,
+	})
+}
+
+func (c synapseE2EClient) sendReply(ctx context.Context, t *testing.T, roomID id.RoomID, target id.EventID) id.EventID {
+	t.Helper()
+	return c.sendRoomEvent(ctx, t, roomID, "m.room.message", "perf-reply", map[string]any{
+		"msgtype": "m.text",
+		"body":    "relation-reply",
+		"m.relates_to": map[string]any{
+			"m.in_reply_to": map[string]any{
+				"event_id": string(target),
+			},
+		},
+	})
+}
+
+func (c synapseE2EClient) sendThreadReply(ctx context.Context, t *testing.T, roomID id.RoomID, target id.EventID) id.EventID {
+	t.Helper()
+	return c.sendRoomEvent(ctx, t, roomID, "m.room.message", "perf-thread", map[string]any{
+		"msgtype": "m.text",
+		"body":    "relation-thread",
+		"m.relates_to": map[string]any{
+			"rel_type": "m.thread",
+			"event_id": string(target),
+			"m.in_reply_to": map[string]any{
+				"event_id": string(target),
+			},
+		},
 	})
 }
 
@@ -489,19 +578,7 @@ func (c synapseE2EClient) sendReceipt(ctx context.Context, t *testing.T, roomID 
 
 func (c synapseE2EClient) uploadMedia(ctx context.Context, t *testing.T, filename, mimeType string, data []byte) id.ContentURIString {
 	t.Helper()
-	values := url.Values{}
-	values.Set("filename", filename)
-	path := "/_matrix/media/v3/upload?" + values.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.accessToken)
-	req.Header.Set("Content-Type", mimeType)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := c.uploadMediaResponse(ctx, t, filename, mimeType, data)
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		t.Fatalf("media upload returned HTTP %d", resp.StatusCode)
@@ -516,6 +593,32 @@ func (c synapseE2EClient) uploadMedia(ctx context.Context, t *testing.T, filenam
 		t.Fatal("media upload did not return content_uri")
 	}
 	return out.ContentURI
+}
+
+func (c synapseE2EClient) uploadMediaStatus(ctx context.Context, t *testing.T, filename, mimeType string, data []byte) int {
+	t.Helper()
+	resp := c.uploadMediaResponse(ctx, t, filename, mimeType, data)
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+func (c synapseE2EClient) uploadMediaResponse(ctx context.Context, t *testing.T, filename, mimeType string, data []byte) *http.Response {
+	t.Helper()
+	values := url.Values{}
+	values.Set("filename", filename)
+	path := "/_matrix/media/v3/upload?" + values.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	req.Header.Set("Content-Type", mimeType)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 func (c synapseE2EClient) downloadMedia(ctx context.Context, t *testing.T, contentURI id.ContentURIString) []byte {
@@ -558,6 +661,18 @@ func (c synapseE2EClient) sendTopic(ctx context.Context, t *testing.T, roomID id
 	t.Helper()
 	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/state/m.room.topic/", url.PathEscape(string(roomID)))
 	c.doJSON(ctx, t, http.MethodPut, path, map[string]any{"topic": "modality-topic"}, nil)
+}
+
+func (c synapseE2EClient) sendName(ctx context.Context, t *testing.T, roomID id.RoomID, name string) {
+	t.Helper()
+	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/state/m.room.name/", url.PathEscape(string(roomID)))
+	c.doJSON(ctx, t, http.MethodPut, path, map[string]any{"name": name}, nil)
+}
+
+func (c synapseE2EClient) sendAvatar(ctx context.Context, t *testing.T, roomID id.RoomID, avatar id.ContentURIString) {
+	t.Helper()
+	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/state/m.room.avatar/", url.PathEscape(string(roomID)))
+	c.doJSON(ctx, t, http.MethodPut, path, map[string]any{"url": string(avatar)}, nil)
 }
 
 func (c synapseE2EClient) redactEvent(ctx context.Context, t *testing.T, roomID id.RoomID, target id.EventID) id.EventID {
@@ -730,6 +845,32 @@ func (c synapseE2EClient) syncUntilEphemeral(ctx context.Context, t *testing.T, 
 	return gotTyping, gotReceipt
 }
 
+func (c synapseE2EClient) syncUntilRelations(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, target id.EventID) (bool, bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var replySeen, threadSeen bool
+	for time.Now().Before(deadline) {
+		resp := c.syncOnce(ctx, t, filterID, since, 5*time.Second)
+		if resp.NextBatch != "" {
+			since = resp.NextBatch
+		}
+		if room := resp.Rooms.Join[roomID]; room != nil {
+			for _, evt := range room.Timeline.Events {
+				if evt.Content.RelatesTo.InReplyTo.EventID == string(target) {
+					replySeen = true
+				}
+				if evt.Content.RelatesTo.RelType == "m.thread" && evt.Content.RelatesTo.EventID == string(target) {
+					threadSeen = true
+				}
+			}
+		}
+		if replySeen && threadSeen {
+			return true, true
+		}
+	}
+	return replySeen, threadSeen
+}
+
 func hasEventTypeCounts(counts, want map[string]int) bool {
 	for eventType, count := range want {
 		if counts[eventType] < count {
@@ -788,8 +929,15 @@ type synapseSyncResponse struct {
 					Type    string `json:"type"`
 					Sender  string `json:"sender"`
 					Content struct {
-						Body    string `json:"body"`
-						MsgType string `json:"msgtype"`
+						Body      string `json:"body"`
+						MsgType   string `json:"msgtype"`
+						RelatesTo struct {
+							RelType   string `json:"rel_type"`
+							EventID   string `json:"event_id"`
+							InReplyTo struct {
+								EventID string `json:"event_id"`
+							} `json:"m.in_reply_to"`
+						} `json:"m.relates_to"`
 					} `json:"content"`
 				} `json:"events"`
 			} `json:"timeline"`
@@ -817,4 +965,18 @@ func envIntList(name string, fallback int) []int {
 		return []int{fallback}
 	}
 	return out
+}
+
+func tinyPNG() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+		0x42, 0x60, 0x82,
+	}
 }

@@ -88,13 +88,17 @@ Beeper during testing:
 - bounded echo-suppression cache for Beeper -> Matrix sent events
 - cached generated fallback avatars for stale or unavailable remote media
 - reproducible benchmarks and local Synapse burst E2E artifacts
+- multi-Synapse E2E runs, including optional parallel execution across
+  disposable homeservers
 - mixed-modality local Synapse E2E coverage for text, image, file, audio, video,
   location, emote, notice, edits, stickers, reactions, redactions, polls, room
   state, and call notices
+- real Synapse checks for upload-limit enforcement, room profile state
+  (`m.room.name`, `m.room.topic`, `m.room.avatar`), and reply/thread relations
 
 The remaining work is mostly around completeness: richer voice/GIF behavior,
-two-phase sync checkpointing, full poll lifecycle support, sync-gap backfill,
-and safe cleanup tooling for old broken backfill events.
+two-phase sync checkpointing, Beeper UI poll round-trip testing, sync-gap
+backfill, and safe cleanup tooling for old broken backfill events.
 
 ## Feature Matrix
 
@@ -108,24 +112,24 @@ Legend:
 | Feature | Status | Direction | Verification | Notes |
 |---|---:|---|---|---|
 | Text messages | Supported | Matrix -> Beeper, Beeper -> Matrix | Live smoke test | Plain `m.room.message` events round-trip. |
-| Burst delivery | Supported | Matrix -> Beeper | Regression test + live 8/8 burst test | Remote sync timeline limit is raised to avoid losing fast messages. |
+| Burst delivery | Supported | Matrix -> Beeper | Real Synapse E2E | Remote sync timeline limit is raised to avoid losing fast messages. |
 | Room discovery | Supported | Matrix -> Beeper | Live smoke test | Joined remote Matrix rooms are synced as Beeper portal rooms. |
-| Room name/topic | Supported | Matrix -> Beeper | Code path | Uses Matrix room state during chat sync. |
-| Replies | Supported | Both | Regression test + live raw-event check | Beeper-local event IDs are rewritten to remote Matrix IDs. |
-| Threads | Partial | Both | Regression test | Thread root IDs are rewritten; deeper UI behavior needs more testing. |
-| Reactions | Partial | Both | Regression test | Add/remove paths persist remote metadata across restarts; broader Matrix client compatibility still needs live matrix testing. |
+| Room name/topic/avatar | Supported | Matrix -> Beeper | Real Synapse E2E | Uses Matrix room state during chat sync. |
+| Replies | Supported | Both | Regression test + real Synapse relation E2E | Beeper-local event IDs are rewritten to remote Matrix IDs. |
+| Threads | Partial | Both | Regression test + real Synapse relation E2E | Thread root IDs are rewritten; deeper Beeper UI behavior needs more testing. |
+| Reactions | Partial | Both | Regression test + real Synapse modality E2E | Add/remove paths persist remote metadata across restarts; broader Matrix client compatibility still needs live matrix testing. |
 | Edits | Supported | Both | Regression test + live smoke test | Legacy Matrix edit fallback prefixes are stripped for Beeper rendering. |
-| Redactions / deletes | Partial | Both | Code path | Live delete paths exist; historical cleanup requires explicit redaction tooling. |
-| Images | Supported | Both | Regression test | Media is reuploaded by default; direct media is available when bridgev2 direct media is enabled. |
-| Files | Supported | Both | Regression test | Same media path as images; upload size and direct download size are capped. |
+| Redactions / deletes | Partial | Both | Real Synapse modality E2E | Live delete paths exist; historical cleanup requires explicit redaction tooling. |
+| Images | Supported | Both | Regression test + real Synapse media E2E | Media is reuploaded by default; direct media is available when bridgev2 direct media is enabled. |
+| Files | Supported | Both | Regression test + real Synapse media E2E | Same media path as images; upload size and direct download size are capped. |
 | Videos | Partial | Both | Code path | Works as media; large files depend on real proxy and homeserver limits. |
 | GIFs | Partial | Both | Code path | Metadata handling exists; GIF-to-MP4 transcoding is not implemented yet. |
 | Voice messages | Partial | Both | Payload support | Voice metadata is supported; waveform generation needs more work. |
-| Polls | Partial | Matrix -> Beeper | Regression test + log-level E2E | Poll starts are normalized with MSC1767 text fallbacks; votes/end need E2E tests. |
+| Polls | Partial | Matrix -> Beeper | Regression test + real Synapse poll lifecycle E2E | Poll starts are normalized with MSC1767 text fallbacks; Beeper UI round-trip still needs account-level testing. |
 | Backfill / history | Partial | Matrix -> Beeper | Code path | Backfill APIs exist; safe placeholder cleanup is intentionally separate. |
-| Avatars | Partial | Matrix -> Beeper | Code path | Downloadable avatars work; stale media is improved by authenticated media and signed direct media. Direct origin fallback is disabled unless allowlisted. |
-| Typing notifications | Supported | Both | Regression test + code path | Beeper typing is sent to remote Matrix; remote Matrix typing is queued back to Beeper. |
-| Read receipts | Supported | Both | Code path | Exact Beeper receipts are sent to remote Matrix; remote Matrix receipts are queued to Beeper. |
+| Avatars | Partial | Matrix -> Beeper | Real Synapse room-state E2E + code path | Downloadable room avatars work; stale media is improved by authenticated media and signed direct media. Direct origin fallback is disabled unless allowlisted. |
+| Typing notifications | Supported | Both | Regression test + real Synapse ephemeral E2E | Beeper typing is sent to remote Matrix; remote Matrix typing is queued back to Beeper. |
+| Read receipts | Supported | Both | Real Synapse ephemeral E2E | Exact Beeper receipts are sent to remote Matrix; remote Matrix receipts are queued to Beeper. |
 | Native audio/video calls | Not supported | Both | Intentionally hidden | Custom bridges should emit call notices/links instead of fake native call UI. |
 | End-to-end encryption | Planned | Both | Not implemented as a product feature | Needs a separate device, key, and trust model design. |
 
@@ -271,7 +275,7 @@ Important test coverage:
 |---|---|
 | Sync burst filter, edits, polls, relation rewriting | `connector/bridge_contract_test.go` |
 | Media URLs and upload limits | `connector/media_test.go` |
-| Local Synapse burst, multi-room, multi-user, media, poll, ephemeral, and mixed-modality E2E | `connector/synapse_e2e_test.go`, `e2e/synapse/run.sh` |
+| Local Synapse burst, multi-room, multi-user, media, upload-limit, room-state profile, relations, poll, ephemeral, and mixed-modality E2E | `connector/synapse_e2e_test.go`, `e2e/synapse/run.sh` |
 
 Run the performance suite:
 
@@ -295,7 +299,7 @@ Key artifacts:
 | `benchmark-summary.json` | Aggregated mean/min/max benchmark metrics. |
 | `metadata.json` | Commit, dirty flag, Go version, platform, and run settings. |
 | `synapse-e2e.txt` | Local Synapse E2E log when `RUN_SYNAPSE_E2E=1`. |
-| `synapse-summary.json` | Parsed burst, mixed-modality, multi-room, dual-user, media, poll, and ephemeral E2E results. |
+| `synapse-summary.json` | Parsed burst, mixed-modality, multi-room, dual-user, media, upload-limit, room-state, relation, poll, and ephemeral E2E results. |
 
 Enable performance gates:
 
@@ -326,7 +330,8 @@ The Synapse suite starts a disposable Docker Synapse using the official
 `matrixdotorg/synapse` image, registers primary and peer test users, uploads the
 bridge's sync filter, sends one or more message bursts, verifies that `/sync`
 contains every burst message, and then runs mixed-modality, multi-room,
-dual-user, media upload/download, poll lifecycle, typing, and receipt tests. It
+dual-user, media upload/download, upload-limit, room-state profile,
+reply/thread relation, poll lifecycle, typing, and receipt tests. It
 raises Synapse test ratelimits in the temporary config so the test measures the
 bridge/filter behavior instead of default homeserver throttling.
 
@@ -335,11 +340,32 @@ Run the same E2E matrix against multiple real Synapse containers:
 ```bash
 RUN_SYNAPSE_E2E=1 \
 LOCAL_SYNAPSE_E2E_SERVER_COUNT=2 \
+LOCAL_SYNAPSE_E2E_PARALLEL=1 \
 LOCAL_SYNAPSE_E2E_BURSTS=10,40 \
 LOCAL_SYNAPSE_E2E_ROOM_COUNT=2 \
 LOCAL_SYNAPSE_E2E_ROOM_BURST=5 \
 ./scripts/perf.sh
 ```
+
+`LOCAL_SYNAPSE_E2E_PARALLEL=1` runs the same Go E2E matrix against each
+disposable Synapse at the same time. That catches shared-resource assumptions in
+the test harness and gives a closer performance signal for multi-homeserver
+development.
+
+Current real-server E2E probes:
+
+| Probe | What it proves |
+|---|---|
+| Burst sync | Fast message batches are not lost by the `/sync` filter. |
+| Mixed modality | Common Matrix event classes survive the selected sync filter. |
+| Multi-room burst | Activity in several rooms is collected without room starvation. |
+| Dual-user room | Sender identity and membership survive a second real user. |
+| Media upload/download | Uploaded MXC media can be downloaded and bridged as file events. |
+| Upload limit | Oversized media receives a real HTTP 413 instead of a silent bridge failure. |
+| Room profile state | Name, topic, and avatar state are visible through real `/sync`. |
+| Reply/thread relations | `m.in_reply_to` and `m.thread` relations survive server round-trip. |
+| Poll lifecycle | Poll start, response, and end events are visible with the bridge filter. |
+| Ephemeral events | Typing and read receipts arrive through ephemeral `/sync` sections. |
 
 The live Matrix sync timeline limit defaults to `100` to preserve larger bursts
 without making every incremental `/sync` too heavy. Tune it with

@@ -38,6 +38,9 @@ class PerfMetricsTest(unittest.TestCase):
                         "synapse multi-room burst sync rooms=2 per_room=5 total=10 send_duration=200ms sync_duration=12ms",
                         "synapse dual-user sync counts=map[m.room.message:2] msgtypes=map[m.text:2] senders=map[@peer:example:1 @proxy:example:1]",
                         "synapse media upload/download msgtypes=map[m.file:1] bytes=29",
+                        "synapse upload limit small_bytes=1024 large_bytes=2097152 oversized_status=413",
+                        "synapse room state profile counts=map[m.room.avatar:1 m.room.name:1 m.room.topic:1]",
+                        "synapse relations reply=true thread=true",
                         "synapse poll lifecycle counts=map[org.matrix.msc3381.poll.end:1 org.matrix.msc3381.poll.response:1 org.matrix.msc3381.poll.start:1]",
                         "synapse ephemeral sync typing=true receipt=true",
                     ]
@@ -54,6 +57,10 @@ class PerfMetricsTest(unittest.TestCase):
         self.assertEqual(summary["multi_room"][0]["total"], 10)
         self.assertIn("@peer:example:1", summary["dual_user"][0]["senders"])
         self.assertEqual(summary["media"][0]["bytes"], 29)
+        self.assertEqual(summary["upload_limit"][0]["oversized_status"], 413)
+        self.assertIn("m.room.avatar:1", summary["room_state"][0]["counts"])
+        self.assertTrue(summary["relations"][0]["reply"])
+        self.assertTrue(summary["relations"][0]["thread"])
         self.assertIn("poll.start:1", summary["poll_lifecycle"][0]["counts"])
         self.assertTrue(summary["ephemeral"][0]["typing"])
         self.assertTrue(summary["ephemeral"][0]["receipt"])

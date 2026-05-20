@@ -93,6 +93,7 @@ start_synapse() {
 
 registration_shared_secret: "beeper-matrix-proxy-test-secret"
 enable_registration: false
+max_upload_size: "1M"
 rc_message:
   per_second: 1000
   burst_count: 1000
@@ -175,6 +176,17 @@ for index in $(seq 1 "$SERVER_COUNT"); do
   start_synapse "$index"
 done
 
-for index in $(seq 1 "$SERVER_COUNT"); do
-  run_e2e_for_server "$index"
-done
+if [[ "${LOCAL_SYNAPSE_E2E_PARALLEL:-0}" == "1" && "$SERVER_COUNT" -gt 1 ]]; then
+  pids=()
+  for index in $(seq 1 "$SERVER_COUNT"); do
+    run_e2e_for_server "$index" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+  done
+else
+  for index in $(seq 1 "$SERVER_COUNT"); do
+    run_e2e_for_server "$index"
+  done
+fi

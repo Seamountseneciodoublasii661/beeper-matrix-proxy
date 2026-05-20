@@ -28,6 +28,15 @@ DUAL_USER_RE = re.compile(
 MEDIA_RE = re.compile(
     r"synapse media upload/download msgtypes=(map\[[^\]]+\]) bytes=(\d+)"
 )
+UPLOAD_LIMIT_RE = re.compile(
+    r"synapse upload limit small_bytes=(\d+) large_bytes=(\d+) oversized_status=(\d+)"
+)
+ROOM_STATE_RE = re.compile(
+    r"synapse room state profile counts=(map\[[^\]]+\])"
+)
+RELATIONS_RE = re.compile(
+    r"synapse relations reply=(true|false) thread=(true|false)"
+)
 POLL_RE = re.compile(
     r"synapse poll lifecycle counts=(map\[[^\]]+\])"
 )
@@ -130,6 +139,9 @@ def summarize_synapse(input_path: str) -> dict[str, object]:
         "multi_room": [],
         "dual_user": [],
         "media": [],
+        "upload_limit": [],
+        "room_state": [],
+        "relations": [],
         "poll_lifecycle": [],
         "ephemeral": [],
     }
@@ -183,6 +195,28 @@ def summarize_synapse(input_path: str) -> dict[str, object]:
                     {
                         "msgtypes": msgtypes,
                         "bytes": int(bytes_count),
+                    }
+                )
+                continue
+            if match := UPLOAD_LIMIT_RE.search(line):
+                small_bytes, large_bytes, oversized_status = match.groups()
+                summary["upload_limit"].append(
+                    {
+                        "small_bytes": int(small_bytes),
+                        "large_bytes": int(large_bytes),
+                        "oversized_status": int(oversized_status),
+                    }
+                )
+                continue
+            if match := ROOM_STATE_RE.search(line):
+                summary["room_state"].append({"counts": match.group(1)})
+                continue
+            if match := RELATIONS_RE.search(line):
+                reply, thread = match.groups()
+                summary["relations"].append(
+                    {
+                        "reply": reply == "true",
+                        "thread": thread == "true",
                     }
                 )
                 continue
