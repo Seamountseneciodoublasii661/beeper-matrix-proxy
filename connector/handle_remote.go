@@ -131,6 +131,10 @@ func (nc *MyNetworkClient) handleLocalMatrixEdit(ctx context.Context, evt *event
 		ID:            networkid.MessageID(evt.ID),
 		TargetMessage: networkid.MessageID(target),
 		ConvertEditFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *event.MessageEventContent) (*bridgev2.ConvertedEdit, error) {
+			data = cleanEditContentForBeeper(data)
+			if err := nc.reuploadContentToBeeper(ctx, intent, data); err != nil {
+				return nil, err
+			}
 			if len(existing) == 0 {
 				return &bridgev2.ConvertedEdit{
 					AddedParts: &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
@@ -138,10 +142,6 @@ func (nc *MyNetworkClient) handleLocalMatrixEdit(ctx context.Context, evt *event
 						Content: data,
 					}}},
 				}, nil
-			}
-			data = cleanEditContentForBeeper(data)
-			if err := nc.reuploadContentToBeeper(ctx, intent, data); err != nil {
-				return nil, err
 			}
 			return &bridgev2.ConvertedEdit{
 				ModifiedParts: []*bridgev2.ConvertedEditPart{{
@@ -195,7 +195,7 @@ func (nc *MyNetworkClient) handleLocalMatrixReaction(ctx context.Context, evt *e
 			RemoteEventID: string(evt.ID),
 		},
 	})
-	nc.rememberRemoteReaction(evt.ID, remoteReaction{
+	nc.rememberRemoteReaction(ctx, evt.ID, remoteReaction{
 		RoomID:        evt.RoomID,
 		TargetMessage: networkid.MessageID(target),
 		Sender:        networkid.UserID(evt.Sender),
@@ -221,7 +221,7 @@ func (nc *MyNetworkClient) handleLocalMatrixRedaction(ctx context.Context, evt *
 	if target == "" {
 		return
 	}
-	if reaction, ok := nc.popRemoteReaction(target); ok {
+	if reaction, ok := nc.popRemoteReaction(ctx, target); ok {
 		nc.bridge.QueueRemoteEvent(nc.login, &simplevent.Reaction{
 			EventMeta: simplevent.EventMeta{
 				Type:      bridgev2.RemoteEventReactionRemove,
@@ -264,7 +264,7 @@ type remoteReaction struct {
 	Timestamp     time.Time
 }
 
-func (nc *MyNetworkClient) rememberRemoteReaction(eventID id.EventID, reaction remoteReaction) {
+func (nc *MyNetworkClient) rememberRemoteReaction(ctx context.Context, eventID id.EventID, reaction remoteReaction) {
 	if eventID == "" {
 		return
 	}
@@ -274,22 +274,98 @@ func (nc *MyNetworkClient) rememberRemoteReaction(eventID id.EventID, reaction r
 		nc.remoteReactions = make(map[id.EventID]remoteReaction)
 	}
 	nc.remoteReactions[eventID] = reaction
+	nc.persistRemoteReaction(ctx, eventID, reaction)
 }
 
-func (nc *MyNetworkClient) popRemoteReaction(eventID id.EventID) (remoteReaction, bool) {
+func (nc *MyNetworkClient) popRemoteReaction(ctx context.Context, eventID id.EventID) (remoteReaction, bool) {
 	if eventID == "" {
 		return remoteReaction{}, false
 	}
 	nc.reactionMu.Lock()
 	defer nc.reactionMu.Unlock()
-	if nc.remoteReactions == nil {
+	if nc.remoteReactions != nil {
+		reaction, ok := nc.remoteReactions[eventID]
+		if ok {
+			delete(nc.remoteReactions, eventID)
+			nc.forgetRemoteReaction(ctx, eventID)
+			return reaction, true
+		}
+	}
+	var reaction remoteReaction
+	var ok bool
+	if reaction, ok = nc.loadRemoteReaction(eventID); ok {
+		nc.forgetRemoteReaction(ctx, eventID)
+		return reaction, true
+	}
+	return remoteReaction{}, false
+}
+
+func (nc *MyNetworkClient) persistRemoteReaction(ctx context.Context, eventID id.EventID, reaction remoteReaction) {
+	if nc.metadata == nil {
+		return
+	}
+	_ = nc.metadata.update(ctx, func(meta *LoginMetadata) bool {
+		if meta.RemoteReactions == nil {
+			meta.RemoteReactions = make(map[string]StoredRemoteReaction)
+		}
+		meta.RemoteReactions[string(eventID)] = reaction.store()
+		return true
+	})
+}
+
+func (nc *MyNetworkClient) loadRemoteReaction(eventID id.EventID) (remoteReaction, bool) {
+	if nc.metadata == nil || eventID == "" {
 		return remoteReaction{}, false
 	}
-	reaction, ok := nc.remoteReactions[eventID]
-	if ok {
-		delete(nc.remoteReactions, eventID)
+	meta := nc.metadata.snapshot()
+	stored, ok := meta.RemoteReactions[string(eventID)]
+	if !ok {
+		return remoteReaction{}, false
 	}
-	return reaction, ok
+	return stored.remote(), true
+}
+
+func (nc *MyNetworkClient) forgetRemoteReaction(ctx context.Context, eventID id.EventID) {
+	if nc.metadata == nil || eventID == "" {
+		return
+	}
+	_ = nc.metadata.update(ctx, func(meta *LoginMetadata) bool {
+		if meta.RemoteReactions == nil {
+			return false
+		}
+		if _, ok := meta.RemoteReactions[string(eventID)]; !ok {
+			return false
+		}
+		delete(meta.RemoteReactions, string(eventID))
+		if len(meta.RemoteReactions) == 0 {
+			meta.RemoteReactions = nil
+		}
+		return true
+	})
+}
+
+func (reaction remoteReaction) store() StoredRemoteReaction {
+	return StoredRemoteReaction{
+		RoomID:        string(reaction.RoomID),
+		TargetMessage: string(reaction.TargetMessage),
+		Sender:        string(reaction.Sender),
+		IsFromMe:      reaction.IsFromMe,
+		EmojiID:       string(reaction.EmojiID),
+		Emoji:         reaction.Emoji,
+		Timestamp:     reaction.Timestamp,
+	}
+}
+
+func (stored StoredRemoteReaction) remote() remoteReaction {
+	return remoteReaction{
+		RoomID:        id.RoomID(stored.RoomID),
+		TargetMessage: networkid.MessageID(stored.TargetMessage),
+		Sender:        networkid.UserID(stored.Sender),
+		IsFromMe:      stored.IsFromMe,
+		EmojiID:       networkid.EmojiID(stored.EmojiID),
+		Emoji:         stored.Emoji,
+		Timestamp:     stored.Timestamp,
+	}
 }
 
 func (nc *MyNetworkClient) handleLocalMatrixPoll(ctx context.Context, evt *event.Event) {

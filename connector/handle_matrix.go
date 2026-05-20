@@ -114,6 +114,8 @@ func (nc *MyNetworkClient) GetCapabilities(ctx context.Context, portal *bridgev2
 	voice := media("audio/ogg", "audio/mpeg", "audio/mp4", "audio/x-m4a", "audio/wav", "audio/webm")
 	maxVoiceDuration := jsontime.S(30 * time.Minute)
 	voice.MaxDuration = &maxVoiceDuration
+	editMaxAge := jsontime.S(24 * time.Hour)
+	deleteMaxAge := jsontime.S(24 * time.Hour)
 	return &event.RoomFeatures{
 		MaxTextLength: 65536,
 		File: event.FileFeatureMap{
@@ -143,10 +145,14 @@ func (nc *MyNetworkClient) GetCapabilities(ctx context.Context, portal *bridgev2
 		LocationMessage:      event.CapLevelFullySupported,
 		Poll:                 event.CapLevelFullySupported,
 		Edit:                 event.CapLevelFullySupported,
+		EditMaxCount:         100,
+		EditMaxAge:           &editMaxAge,
 		Delete:               event.CapLevelFullySupported,
+		DeleteMaxAge:         &deleteMaxAge,
 		Reply:                event.CapLevelFullySupported,
 		Thread:               event.CapLevelFullySupported,
 		Reaction:             event.CapLevelFullySupported,
+		ReactionCount:        1,
 		CustomEmojiReactions: true,
 		ReadReceipts:         true,
 		TypingNotifications:  true,

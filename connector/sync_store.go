@@ -10,16 +10,24 @@ import (
 )
 
 type loginSyncStore struct {
+	metadata *loginMetadataStore
+}
+
+type loginMetadataStore struct {
 	login *bridgev2.UserLogin
 	mu    sync.Mutex
 }
 
-func newLoginSyncStore(login *bridgev2.UserLogin) *loginSyncStore {
-	return &loginSyncStore{login: login}
+func newLoginMetadataStore(login *bridgev2.UserLogin) *loginMetadataStore {
+	return &loginMetadataStore{login: login}
+}
+
+func newLoginSyncStore(metadata *loginMetadataStore) *loginSyncStore {
+	return &loginSyncStore{metadata: metadata}
 }
 
 func (s *loginSyncStore) SaveFilterID(ctx context.Context, _ id.UserID, filterID string) error {
-	return s.updateMetadata(ctx, func(meta *LoginMetadata) bool {
+	return s.metadata.update(ctx, func(meta *LoginMetadata) bool {
 		if meta.SyncFilterID == filterID {
 			return false
 		}
@@ -29,14 +37,12 @@ func (s *loginSyncStore) SaveFilterID(ctx context.Context, _ id.UserID, filterID
 }
 
 func (s *loginSyncStore) LoadFilterID(context.Context, id.UserID) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	meta := s.metadataLocked()
+	meta := s.metadata.snapshot()
 	return meta.SyncFilterID, nil
 }
 
 func (s *loginSyncStore) SaveNextBatch(ctx context.Context, _ id.UserID, nextBatchToken string) error {
-	return s.updateMetadata(ctx, func(meta *LoginMetadata) bool {
+	return s.metadata.update(ctx, func(meta *LoginMetadata) bool {
 		if meta.SyncNextBatch == nextBatchToken {
 			return false
 		}
@@ -48,13 +54,14 @@ func (s *loginSyncStore) SaveNextBatch(ctx context.Context, _ id.UserID, nextBat
 }
 
 func (s *loginSyncStore) LoadNextBatch(context.Context, id.UserID) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	meta := s.metadataLocked()
+	meta := s.metadata.snapshot()
 	return meta.SyncNextBatch, nil
 }
 
-func (s *loginSyncStore) updateMetadata(ctx context.Context, update func(*LoginMetadata) bool) error {
+func (s *loginMetadataStore) update(ctx context.Context, update func(*LoginMetadata) bool) error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	meta := s.metadataLocked()
@@ -67,7 +74,24 @@ func (s *loginSyncStore) updateMetadata(ctx context.Context, update func(*LoginM
 	return s.login.Bridge.DB.UserLogin.Update(ctx, s.login.UserLogin)
 }
 
-func (s *loginSyncStore) metadataLocked() *LoginMetadata {
+func (s *loginMetadataStore) snapshot() *LoginMetadata {
+	if s == nil {
+		return &LoginMetadata{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	meta := s.metadataLocked()
+	clone := *meta
+	if meta.RemoteReactions != nil {
+		clone.RemoteReactions = make(map[string]StoredRemoteReaction, len(meta.RemoteReactions))
+		for key, value := range meta.RemoteReactions {
+			clone.RemoteReactions[key] = value
+		}
+	}
+	return &clone
+}
+
+func (s *loginMetadataStore) metadataLocked() *LoginMetadata {
 	if s.login == nil {
 		return &LoginMetadata{}
 	}

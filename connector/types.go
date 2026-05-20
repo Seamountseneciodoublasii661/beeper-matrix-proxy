@@ -20,6 +20,8 @@ type LoginMetadata struct {
 	LastSyncAt    *time.Time `json:"last_sync_at,omitempty"`
 	SyncNextBatch string     `json:"sync_next_batch,omitempty"`
 	SyncFilterID  string     `json:"sync_filter_id,omitempty"`
+
+	RemoteReactions map[string]StoredRemoteReaction `json:"remote_reactions,omitempty"`
 }
 
 // New creates a new instance for database registration.
@@ -67,4 +69,16 @@ type ReactionMetadata struct {
 // New creates a new instance for database registration.
 func (m *ReactionMetadata) New() any {
 	return &ReactionMetadata{}
+}
+
+// StoredRemoteReaction persists remote Matrix reaction context so redactions
+// still bridge correctly after a process restart.
+type StoredRemoteReaction struct {
+	RoomID        string    `json:"room_id,omitempty"`
+	TargetMessage string    `json:"target_message,omitempty"`
+	Sender        string    `json:"sender,omitempty"`
+	IsFromMe      bool      `json:"is_from_me,omitempty"`
+	EmojiID       string    `json:"emoji_id,omitempty"`
+	Emoji         string    `json:"emoji,omitempty"`
+	Timestamp     time.Time `json:"timestamp,omitempty"`
 }

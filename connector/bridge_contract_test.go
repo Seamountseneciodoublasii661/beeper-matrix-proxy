@@ -178,7 +178,7 @@ func TestConfigureLocalMatrixSyncerIsIdempotent(t *testing.T) {
 func TestLoginSyncStorePersistsNextBatchAndFilterInMetadata(t *testing.T) {
 	dbLogin := &database.UserLogin{Metadata: &LoginMetadata{}}
 	login := &bridgev2.UserLogin{UserLogin: dbLogin}
-	store := newLoginSyncStore(login)
+	store := newLoginSyncStore(newLoginMetadataStore(login))
 
 	if err := store.SaveFilterID(context.Background(), "@user:example", "filter-1"); err != nil {
 		t.Fatalf("SaveFilterID returned error: %v", err)
@@ -201,6 +201,54 @@ func TestLoginSyncStorePersistsNextBatchAndFilterInMetadata(t *testing.T) {
 	meta := dbLogin.Metadata.(*LoginMetadata)
 	if meta.LastSyncAt == nil {
 		t.Fatal("expected LastSyncAt to be updated with next_batch")
+	}
+}
+
+func TestPersistentRemoteReactionSurvivesMemoryMapMiss(t *testing.T) {
+	dbLogin := &database.UserLogin{Metadata: &LoginMetadata{}}
+	login := &bridgev2.UserLogin{UserLogin: dbLogin}
+	nc := &MyNetworkClient{
+		metadata: newLoginMetadataStore(login),
+	}
+	reactionEventID := id.EventID("$reaction:matrix.example")
+	reaction := remoteReaction{
+		RoomID:        "!room:matrix.example",
+		TargetMessage: "$target:matrix.example",
+		Sender:        "@alice:matrix.example",
+		EmojiID:       "👍",
+		Emoji:         "👍",
+		Timestamp:     time.Unix(123, 0),
+	}
+
+	nc.persistRemoteReaction(context.Background(), reactionEventID, reaction)
+
+	loaded, ok := nc.popRemoteReaction(context.Background(), reactionEventID)
+	if !ok {
+		t.Fatal("expected persisted remote reaction to be found without memory map")
+	}
+	if loaded.TargetMessage != reaction.TargetMessage || loaded.Sender != reaction.Sender || loaded.Emoji != reaction.Emoji {
+		t.Fatalf("unexpected loaded reaction: %#v", loaded)
+	}
+	meta := dbLogin.Metadata.(*LoginMetadata)
+	if len(meta.RemoteReactions) != 0 {
+		t.Fatalf("expected reaction metadata to be removed after pop, got %#v", meta.RemoteReactions)
+	}
+}
+
+func TestRoomCapabilitiesExposeBoundedInteractiveFeatures(t *testing.T) {
+	features := (&MyNetworkClient{}).GetCapabilities(context.Background(), nil)
+
+	if features.Edit != event.CapLevelFullySupported || features.EditMaxAge == nil || features.EditMaxCount == 0 {
+		t.Fatalf("expected bounded edit capability, got %#v", features)
+	}
+	if features.Delete != event.CapLevelFullySupported || features.DeleteMaxAge == nil {
+		t.Fatalf("expected bounded delete capability, got %#v", features)
+	}
+	if features.Reaction != event.CapLevelFullySupported || features.ReactionCount != 1 {
+		t.Fatalf("expected single-reaction capability, got reaction=%d count=%d", features.Reaction, features.ReactionCount)
+	}
+	if features.File[event.CapMsgVoice] == nil || features.File[event.CapMsgVoice].MaxDuration == nil {
+		t.Fatal("expected voice message max duration to be advertised")
 	}
 }
 

@@ -2,6 +2,9 @@ package connector
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -150,6 +153,7 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		connector:  c,
 		sentEvents: make(map[id.EventID]struct{}),
 	}
+	client.metadata = newLoginMetadataStore(login)
 	if meta, ok := login.Metadata.(*LoginMetadata); ok {
 		homeserverURL := meta.HomeserverURL
 		if homeserverURL == "" {
@@ -160,7 +164,7 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 			return err
 		}
 		cli.DeviceID = id.DeviceID(meta.DeviceID)
-		cli.Store = newLoginSyncStore(login)
+		cli.Store = newLoginSyncStore(client.metadata)
 		client.mx = cli
 		client.loggedIn = meta.AccessToken != ""
 	}
@@ -180,9 +184,12 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 }
 
 type directMediaPayload struct {
-	Version int    `json:"v"`
-	LoginID string `json:"login_id"`
-	MXC     string `json:"mxc"`
+	Version   int    `json:"v"`
+	LoginID   string `json:"login_id"`
+	MXC       string `json:"mxc"`
+	ExpiresAt int64  `json:"exp"`
+	Nonce     string `json:"nonce"`
+	Signature string `json:"sig,omitempty"`
 }
 
 func (c *MyConnector) SetUseDirectMedia() {
@@ -198,11 +205,22 @@ func (c *MyConnector) directMediaEnabled() bool {
 }
 
 func encodeDirectMediaID(loginID networkid.UserLoginID, uri id.ContentURIString) (networkid.MediaID, error) {
-	payload := directMediaPayload{
-		Version: 1,
-		LoginID: string(loginID),
-		MXC:     string(uri),
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return networkid.MediaID(""), err
 	}
+	payload := directMediaPayload{
+		Version:   2,
+		LoginID:   string(loginID),
+		MXC:       string(uri),
+		ExpiresAt: time.Now().Add(directMediaIDTTL()).Unix(),
+		Nonce:     base64.RawURLEncoding.EncodeToString(nonce),
+	}
+	signature, ok := signDirectMediaPayload(payload)
+	if !ok {
+		return networkid.MediaID(""), fmt.Errorf("direct media signing key is not configured")
+	}
+	payload.Signature = signature
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return networkid.MediaID(""), err
@@ -219,10 +237,70 @@ func decodeDirectMediaID(mediaID networkid.MediaID) (directMediaPayload, error) 
 	if err = json.Unmarshal(raw, &payload); err != nil {
 		return directMediaPayload{}, err
 	}
-	if payload.Version != 1 || payload.LoginID == "" || payload.MXC == "" {
+	if payload.Version != 2 || payload.LoginID == "" || payload.MXC == "" || payload.ExpiresAt == 0 || payload.Nonce == "" || payload.Signature == "" {
 		return directMediaPayload{}, fmt.Errorf("invalid direct media payload")
 	}
+	if time.Now().Unix() > payload.ExpiresAt {
+		return directMediaPayload{}, fmt.Errorf("expired direct media payload")
+	}
+	if !validDirectMediaSignature(payload) {
+		return directMediaPayload{}, fmt.Errorf("invalid direct media signature")
+	}
 	return payload, nil
+}
+
+func directMediaIDTTL() time.Duration {
+	raw := os.Getenv("BEEPER_MATRIX_PROXY_DIRECT_MEDIA_TTL")
+	if raw == "" {
+		return 24 * time.Hour
+	}
+	duration, err := time.ParseDuration(raw)
+	if err != nil || duration <= 0 {
+		return 24 * time.Hour
+	}
+	return duration
+}
+
+func directMediaSigningKey() ([]byte, bool) {
+	if key := os.Getenv("BEEPER_MATRIX_PROXY_DIRECT_MEDIA_KEY"); key != "" {
+		return []byte(key), true
+	}
+	if key := os.Getenv("BEEPER_MATRIX_PROXY_MEDIA_KEY"); key != "" {
+		return []byte(key), true
+	}
+	return nil, false
+}
+
+func signDirectMediaPayload(payload directMediaPayload) (string, bool) {
+	key, ok := directMediaSigningKey()
+	if !ok {
+		return "", false
+	}
+	mac := hmac.New(sha256.New, key)
+	fmt.Fprintf(mac, "%d\n%s\n%s\n%d\n%s", payload.Version, payload.LoginID, payload.MXC, payload.ExpiresAt, payload.Nonce)
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), true
+}
+
+func validDirectMediaSignature(payload directMediaPayload) bool {
+	expected, ok := signDirectMediaPayload(directMediaPayload{
+		Version:   payload.Version,
+		LoginID:   payload.LoginID,
+		MXC:       payload.MXC,
+		ExpiresAt: payload.ExpiresAt,
+		Nonce:     payload.Nonce,
+	})
+	if !ok {
+		return false
+	}
+	got, err := base64.RawURLEncoding.DecodeString(payload.Signature)
+	if err != nil {
+		return false
+	}
+	want, err := base64.RawURLEncoding.DecodeString(expected)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(got, want)
 }
 
 func (c *MyConnector) Download(ctx context.Context, mediaID networkid.MediaID, params map[string]string) (mediaproxy.GetMediaResponse, error) {

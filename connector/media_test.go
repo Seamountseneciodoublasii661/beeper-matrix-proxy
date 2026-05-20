@@ -2,6 +2,7 @@ package connector
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"image/png"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/crypto/attachment"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -67,6 +69,18 @@ func TestDownloadMXCDirectDoesNotSendAccessTokenToMXCOrigin(t *testing.T) {
 	}
 }
 
+func TestDirectMXCFallbackRequiresAllowlist(t *testing.T) {
+	uri := id.ContentURI{Homeserver: "matrix.example", FileID: "abc"}
+	t.Setenv("LOCAL_MATRIX_DIRECT_MXC_FALLBACK_ALLOWLIST", "")
+	if directMXCFallbackAllowed(uri) {
+		t.Fatal("expected direct MXC fallback to be disabled by default")
+	}
+	t.Setenv("LOCAL_MATRIX_DIRECT_MXC_FALLBACK_ALLOWLIST", "other.example, matrix.example ")
+	if !directMXCFallbackAllowed(uri) {
+		t.Fatal("expected direct MXC fallback to allow explicit homeserver")
+	}
+}
+
 func TestReadMatrixMediaResponseRejectsOversizedBody(t *testing.T) {
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -101,6 +115,7 @@ func TestDirectMediaMaxBytesUsesEnvironmentOverride(t *testing.T) {
 }
 
 func TestDirectMediaIDRoundTrip(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_DIRECT_MEDIA_KEY", "test-key")
 	mediaID, err := encodeDirectMediaID("login-1", id.ContentURIString("mxc://matrix.example/media"))
 	if err != nil {
 		t.Fatalf("encodeDirectMediaID returned error: %v", err)
@@ -110,8 +125,42 @@ func TestDirectMediaIDRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeDirectMediaID returned error: %v", err)
 	}
-	if payload.Version != 1 || payload.LoginID != "login-1" || payload.MXC != "mxc://matrix.example/media" {
+	if payload.Version != 2 || payload.LoginID != "login-1" || payload.MXC != "mxc://matrix.example/media" || payload.Signature == "" {
 		t.Fatalf("unexpected direct media payload: %#v", payload)
+	}
+}
+
+func TestDirectMediaIDRequiresSigningKey(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_DIRECT_MEDIA_KEY", "")
+	t.Setenv("BEEPER_MATRIX_PROXY_MEDIA_KEY", "")
+
+	if _, err := encodeDirectMediaID("login-1", id.ContentURIString("mxc://matrix.example/media")); err == nil {
+		t.Fatal("expected direct media ID encoding to require a signing key")
+	}
+}
+
+func TestDirectMediaIDRejectsTampering(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_DIRECT_MEDIA_KEY", "test-key")
+	mediaID, err := encodeDirectMediaID("login-1", id.ContentURIString("mxc://matrix.example/media"))
+	if err != nil {
+		t.Fatalf("encodeDirectMediaID returned error: %v", err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(string(mediaID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload directMediaPayload
+	if err = json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload.MXC = "mxc://matrix.example/other"
+	raw, err = json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = decodeDirectMediaID(networkid.MediaID(base64.RawURLEncoding.EncodeToString(raw))); err == nil {
+		t.Fatal("expected tampered direct media ID to be rejected")
 	}
 }
 

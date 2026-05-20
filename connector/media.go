@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"maunium.net/go/mautrix"
@@ -209,6 +210,9 @@ func (nc *MyNetworkClient) downloadMatrixMedia(ctx context.Context, uri id.Conte
 			return data, nil
 		}
 	}
+	if !directMXCFallbackAllowed(uri) {
+		return nil, err
+	}
 	fallback, fallbackErr := downloadMXCDirect(ctx, uri, directMediaMaxBytes())
 	if fallbackErr != nil {
 		return nil, fmt.Errorf("homeserver media proxy failed: %w; direct origin media fetch failed: %w", err, fallbackErr)
@@ -217,6 +221,20 @@ func (nc *MyNetworkClient) downloadMatrixMedia(ctx context.Context, uri id.Conte
 		Str("mxc", string(uri.CUString())).
 		Msg("Downloaded Matrix media directly after homeserver proxy failed")
 	return fallback, nil
+}
+
+func directMXCFallbackAllowed(uri id.ContentURI) bool {
+	raw := os.Getenv("LOCAL_MATRIX_DIRECT_MXC_FALLBACK_ALLOWLIST")
+	if raw == "" {
+		return false
+	}
+	for _, allowed := range strings.Split(raw, ",") {
+		allowed = strings.TrimSpace(allowed)
+		if allowed != "" && strings.EqualFold(allowed, uri.Homeserver) {
+			return true
+		}
+	}
+	return false
 }
 
 func (nc *MyNetworkClient) downloadFromBeeper(ctx context.Context, uri id.ContentURIString, enc *event.EncryptedFileInfo) ([]byte, error) {

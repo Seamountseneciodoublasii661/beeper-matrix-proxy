@@ -34,6 +34,7 @@ type MyNetworkClient struct {
 	bridge             *bridgev2.Bridge
 	login              *bridgev2.UserLogin
 	connector          *MyConnector
+	metadata           *loginMetadataStore
 	mx                 *mautrix.Client
 	connectMu          sync.Mutex
 	cancel             context.CancelFunc
