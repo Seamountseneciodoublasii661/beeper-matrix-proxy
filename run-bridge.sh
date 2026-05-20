@@ -4,17 +4,22 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export CGO_CFLAGS="-I/opt/homebrew/opt/libolm/include"
 export CGO_LDFLAGS="-L/opt/homebrew/opt/libolm/lib -lolm"
+if [[ -f ".env" ]]; then
+  set -a
+  source ".env"
+  set +a
+fi
 export LOCAL_MATRIX_INITIAL_BACKFILL_LIMIT="${LOCAL_MATRIX_INITIAL_BACKFILL_LIMIT:-0}"
 export BEEPER_MATRIX_PROXY_DIR="${BEEPER_MATRIX_PROXY_DIR:-$PWD}"
-export BEEPER_MATRIX_PROXY_BINARY="${BEEPER_MATRIX_PROXY_BINARY:-$BEEPER_MATRIX_PROXY_DIR/beeper-matrix-proxy}"
-export BEEPER_BRIDGE_NAME="${BEEPER_BRIDGE_NAME:-sh-vcvm-matrix}"
-export BEEPER_MATRIX_PROXY_AUTOBUILD="${BEEPER_MATRIX_PROXY_AUTOBUILD:-1}"
-export BEEPER_BBCTL="${BEEPER_BBCTL:-$(command -v bbctl || true)}"
-if [[ -f "$BEEPER_MATRIX_PROXY_DIR/.env" ]]; then
+if [[ "$BEEPER_MATRIX_PROXY_DIR" != "$PWD" && -f "$BEEPER_MATRIX_PROXY_DIR/.env" ]]; then
   set -a
   source "$BEEPER_MATRIX_PROXY_DIR/.env"
   set +a
 fi
+export BEEPER_MATRIX_PROXY_BINARY="${BEEPER_MATRIX_PROXY_BINARY:-$BEEPER_MATRIX_PROXY_DIR/beeper-matrix-proxy}"
+export BEEPER_BRIDGE_NAME="${BEEPER_BRIDGE_NAME:-sh-vcvm-matrix}"
+export BEEPER_MATRIX_PROXY_AUTOBUILD="${BEEPER_MATRIX_PROXY_AUTOBUILD:-1}"
+export BEEPER_BBCTL="${BEEPER_BBCTL:-$(command -v bbctl || true)}"
 if [[ -z "$BEEPER_BBCTL" && -x "$HOME/.local/bin/bbctl" ]]; then
   export BEEPER_BBCTL="$HOME/.local/bin/bbctl"
 fi

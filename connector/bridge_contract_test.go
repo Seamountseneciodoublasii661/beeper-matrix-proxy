@@ -3,8 +3,15 @@ package connector
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
@@ -75,6 +82,125 @@ func TestCanceledSyncExitClearsCancelWithoutTransientLogout(t *testing.T) {
 	}
 	if !nc.loggedIn {
 		t.Fatal("expected normal cancellation not to mark logged out")
+	}
+}
+
+func TestUnknownTokenSyncExitDoesNotScheduleReconnect(t *testing.T) {
+	nc := &MyNetworkClient{
+		loggedIn:       true,
+		syncGeneration: 4,
+		cancel:         func() {},
+	}
+
+	nc.handleSyncExit(4, mautrix.MUnknownToken)
+
+	if nc.cancel != nil {
+		t.Fatal("expected unknown-token sync exit to clear cancel")
+	}
+	if nc.reconnectScheduled {
+		t.Fatal("expected unknown-token sync exit not to schedule reconnect")
+	}
+	if nc.loggedIn {
+		t.Fatal("expected unknown-token sync exit to mark client logged out")
+	}
+}
+
+func TestRemoteReconnectDelayBacksOffWithCap(t *testing.T) {
+	if got := remoteReconnectDelay(0); got != remoteReconnectBaseDelay {
+		t.Fatalf("expected first reconnect delay %s, got %s", remoteReconnectBaseDelay, got)
+	}
+	if got := remoteReconnectDelay(2); got != 2*time.Minute {
+		t.Fatalf("expected third reconnect delay 2m, got %s", got)
+	}
+	if got := remoteReconnectDelay(20); got != remoteReconnectMaxDelay {
+		t.Fatalf("expected reconnect delay cap %s, got %s", remoteReconnectMaxDelay, got)
+	}
+}
+
+func TestRemoteMatrixPreflightFailsOnBadGateway(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client, err := mautrix.NewClient(server.URL, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc := &MyNetworkClient{mx: client}
+
+	err = nc.remoteMatrixPreflight(context.Background())
+	if err == nil {
+		t.Fatal("expected preflight to fail on HTTP 502")
+	}
+	if !strings.Contains(err.Error(), "/versions") {
+		t.Fatalf("expected error to explain /versions preflight, got %v", err)
+	}
+}
+
+func TestRemoteMatrixPreflightAcceptsHealthyVersionsEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_matrix/client/versions" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"versions":["v1.11"]}`))
+	}))
+	defer server.Close()
+
+	client, err := mautrix.NewClient(server.URL, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc := &MyNetworkClient{mx: client}
+
+	if err := nc.remoteMatrixPreflight(context.Background()); err != nil {
+		t.Fatalf("expected healthy /versions endpoint, got %v", err)
+	}
+}
+
+func TestConfigureLocalMatrixSyncerIsIdempotent(t *testing.T) {
+	syncer := mautrix.NewDefaultSyncer()
+	nc := &MyNetworkClient{mx: &mautrix.Client{Syncer: syncer}}
+
+	nc.configureLocalMatrixSyncer()
+	nc.configureLocalMatrixSyncer()
+
+	syncerValue := reflect.ValueOf(syncer).Elem()
+	if got := syncerValue.FieldByName("syncListeners").Len(); got != 1 {
+		t.Fatalf("expected one sync listener after repeated configure, got %d", got)
+	}
+	listeners := syncerValue.FieldByName("listeners")
+	if got := listeners.MapIndex(reflect.ValueOf(event.EventMessage)).Len(); got != 1 {
+		t.Fatalf("expected one message listener after repeated configure, got %d", got)
+	}
+}
+
+func TestLoginSyncStorePersistsNextBatchAndFilterInMetadata(t *testing.T) {
+	dbLogin := &database.UserLogin{Metadata: &LoginMetadata{}}
+	login := &bridgev2.UserLogin{UserLogin: dbLogin}
+	store := newLoginSyncStore(login)
+
+	if err := store.SaveFilterID(context.Background(), "@user:example", "filter-1"); err != nil {
+		t.Fatalf("SaveFilterID returned error: %v", err)
+	}
+	if err := store.SaveNextBatch(context.Background(), "@user:example", "batch-1"); err != nil {
+		t.Fatalf("SaveNextBatch returned error: %v", err)
+	}
+
+	filterID, err := store.LoadFilterID(context.Background(), "@user:example")
+	if err != nil {
+		t.Fatalf("LoadFilterID returned error: %v", err)
+	}
+	nextBatch, err := store.LoadNextBatch(context.Background(), "@user:example")
+	if err != nil {
+		t.Fatalf("LoadNextBatch returned error: %v", err)
+	}
+	if filterID != "filter-1" || nextBatch != "batch-1" {
+		t.Fatalf("unexpected persisted sync state: filter=%q next_batch=%q", filterID, nextBatch)
+	}
+	meta := dbLogin.Metadata.(*LoginMetadata)
+	if meta.LastSyncAt == nil {
+		t.Fatal("expected LastSyncAt to be updated with next_batch")
 	}
 }
 

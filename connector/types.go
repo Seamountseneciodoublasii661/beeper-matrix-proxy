@@ -18,6 +18,8 @@ type LoginMetadata struct {
 	DeviceID      string     `json:"device_id,omitempty"`
 	Scopes        []string   `json:"scopes,omitempty"`
 	LastSyncAt    *time.Time `json:"last_sync_at,omitempty"`
+	SyncNextBatch string     `json:"sync_next_batch,omitempty"`
+	SyncFilterID  string     `json:"sync_filter_id,omitempty"`
 }
 
 // New creates a new instance for database registration.

@@ -24,7 +24,6 @@ func TestDirectMediaDownloadURLsEscapeMXCParts(t *testing.T) {
 	urls := directMediaDownloadURLs(uri)
 
 	expected := []string{
-		"https://matrix.example:8448/_matrix/client/v1/media/download/matrix.example:8448/abc%2Fdef+ghi",
 		"https://matrix.example:8448/_matrix/media/v3/download/matrix.example:8448/abc%2Fdef+ghi",
 		"https://matrix.example:8448/_matrix/media/r0/download/matrix.example:8448/abc%2Fdef+ghi",
 	}
@@ -38,14 +37,13 @@ func TestDirectMediaDownloadURLsEscapeMXCParts(t *testing.T) {
 	}
 }
 
-func TestDownloadMXCDirectUsesAuthenticatedMediaEndpoint(t *testing.T) {
-	const token = "test-access-token"
+func TestDownloadMXCDirectDoesNotSendAccessTokenToMXCOrigin(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/_matrix/client/v1/media/download/") {
-			t.Fatalf("expected authenticated media endpoint first, got %s", r.URL.Path)
+		if !strings.HasPrefix(r.URL.Path, "/_matrix/media/v3/download/") {
+			t.Fatalf("expected unauthenticated media endpoint first, got %s", r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
-			t.Fatalf("expected bearer token, got %q", got)
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("expected no bearer token to be sent to MXC origin, got %q", got)
 		}
 		_, _ = w.Write([]byte("media"))
 	}))
@@ -60,7 +58,7 @@ func TestDownloadMXCDirectUsesAuthenticatedMediaEndpoint(t *testing.T) {
 	data, err := downloadMXCDirect(t.Context(), id.ContentURI{
 		Homeserver: strings.TrimPrefix(server.URL, "https://"),
 		FileID:     "abc",
-	}, token, defaultDirectMediaMaxBytes)
+	}, defaultDirectMediaMaxBytes)
 	if err != nil {
 		t.Fatalf("downloadMXCDirect returned error: %v", err)
 	}
@@ -78,6 +76,19 @@ func TestReadMatrixMediaResponseRejectsOversizedBody(t *testing.T) {
 	_, err := readMatrixMediaResponse(resp, 5)
 	if err == nil {
 		t.Fatal("expected oversized body to be rejected")
+	}
+}
+
+func TestReadMatrixMediaResponseRejectsOversizedContentLength(t *testing.T) {
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		ContentLength: 6,
+		Body:          io.NopCloser(strings.NewReader("abcdef")),
+	}
+
+	_, err := readMatrixMediaResponse(resp, 5)
+	if err == nil {
+		t.Fatal("expected oversized content length to be rejected before full read")
 	}
 }
 

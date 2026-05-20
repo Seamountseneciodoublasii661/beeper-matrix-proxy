@@ -160,6 +160,7 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 			return err
 		}
 		cli.DeviceID = id.DeviceID(meta.DeviceID)
+		cli.Store = newLoginSyncStore(login)
 		client.mx = cli
 		client.loggedIn = meta.AccessToken != ""
 	}

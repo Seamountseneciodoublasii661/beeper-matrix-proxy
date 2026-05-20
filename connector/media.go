@@ -150,7 +150,7 @@ func (nc *MyNetworkClient) reuploadMediaToLocalMatrix(ctx context.Context, conte
 		return nil
 	}
 	uri, enc := mediaSource(content)
-	data, err := nc.bridge.Bot.DownloadMedia(ctx, uri, enc)
+	data, err := nc.downloadFromBeeper(ctx, uri, enc)
 	if err != nil {
 		return fmt.Errorf("download Beeper media: %w", err)
 	}
@@ -200,11 +200,16 @@ func (nc *MyNetworkClient) downloadFromLocalMatrix(ctx context.Context, uri id.C
 }
 
 func (nc *MyNetworkClient) downloadMatrixMedia(ctx context.Context, uri id.ContentURI) ([]byte, error) {
-	data, err := nc.mx.DownloadBytes(ctx, uri)
+	resp, err := nc.mx.Download(ctx, uri)
 	if err == nil {
-		return data, nil
+		data, readErr := readMatrixMediaResponse(resp, directMediaMaxBytes())
+		if readErr != nil {
+			err = readErr
+		} else {
+			return data, nil
+		}
 	}
-	fallback, fallbackErr := downloadMXCDirect(ctx, uri, nc.mx.AccessToken, directMediaMaxBytes())
+	fallback, fallbackErr := downloadMXCDirect(ctx, uri, directMediaMaxBytes())
 	if fallbackErr != nil {
 		return nil, fmt.Errorf("homeserver media proxy failed: %w; direct origin media fetch failed: %w", err, fallbackErr)
 	}
@@ -214,16 +219,30 @@ func (nc *MyNetworkClient) downloadMatrixMedia(ctx context.Context, uri id.Conte
 	return fallback, nil
 }
 
-func downloadMXCDirect(ctx context.Context, uri id.ContentURI, accessToken string, maxBytes int64) ([]byte, error) {
+func (nc *MyNetworkClient) downloadFromBeeper(ctx context.Context, uri id.ContentURIString, enc *event.EncryptedFileInfo) ([]byte, error) {
+	var data []byte
+	maxSize := nc.getLocalMaxUploadSize()
+	err := nc.bridge.Bot.DownloadMediaToFile(ctx, uri, enc, false, func(file *os.File) error {
+		info, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		if maxSize > 0 && info.Size() > maxSize {
+			return fmt.Errorf("downloaded Beeper media exceeded limit (%d > %d bytes)", info.Size(), maxSize)
+		}
+		data, err = io.ReadAll(file)
+		return err
+	})
+	return data, err
+}
+
+func downloadMXCDirect(ctx context.Context, uri id.ContentURI, maxBytes int64) ([]byte, error) {
 	var lastErr error
-	for _, endpoint := range directMediaDownloadEndpoints(uri) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.URL, nil)
+	for _, url := range directMediaDownloadURLs(uri) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			lastErr = err
 			continue
-		}
-		if endpoint.Authenticated && accessToken != "" {
-			req.Header.Set("Authorization", "Bearer "+accessToken)
 		}
 		resp, err := matrixMediaHTTPClient.Do(req)
 		if err != nil {
@@ -248,6 +267,10 @@ func readMatrixMediaResponse(resp *http.Response, maxBytes int64) ([]byte, error
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("HTTP %d from direct Matrix media download", resp.StatusCode)
+	}
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("Matrix media download exceeded limit by content length (%d > %d bytes)", resp.ContentLength, maxBytes)
 	}
 	if maxBytes <= 0 {
 		return io.ReadAll(resp.Body)
@@ -274,32 +297,14 @@ func directMediaMaxBytes() int64 {
 	return value
 }
 
-type directMediaDownloadEndpoint struct {
-	URL           string
-	Authenticated bool
-}
-
-func directMediaDownloadEndpoints(uri id.ContentURI) []directMediaDownloadEndpoint {
+func directMediaDownloadURLs(uri id.ContentURI) []string {
 	origin := "https://" + uri.Homeserver
 	server := url.PathEscape(uri.Homeserver)
 	mediaID := url.PathEscape(uri.FileID)
-	return []directMediaDownloadEndpoint{
-		{
-			URL:           origin + "/_matrix/client/v1/media/download/" + server + "/" + mediaID,
-			Authenticated: true,
-		},
-		{URL: origin + "/_matrix/media/v3/download/" + server + "/" + mediaID},
-		{URL: origin + "/_matrix/media/r0/download/" + server + "/" + mediaID},
+	return []string{
+		origin + "/_matrix/media/v3/download/" + server + "/" + mediaID,
+		origin + "/_matrix/media/r0/download/" + server + "/" + mediaID,
 	}
-}
-
-func directMediaDownloadURLs(uri id.ContentURI) []string {
-	endpoints := directMediaDownloadEndpoints(uri)
-	urls := make([]string, 0, len(endpoints))
-	for _, endpoint := range endpoints {
-		urls = append(urls, endpoint.URL)
-	}
-	return urls
 }
 
 func generateFallbackAvatarPNG(seed string) ([]byte, error) {

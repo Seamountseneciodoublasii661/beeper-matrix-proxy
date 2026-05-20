@@ -3,6 +3,8 @@ package connector
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"sync"
@@ -20,6 +22,11 @@ import (
 // Ensure MyNetworkClient implements NetworkAPI.
 var _ bridgev2.NetworkAPI = (*MyNetworkClient)(nil)
 
+const (
+	remoteReconnectBaseDelay = 30 * time.Second
+	remoteReconnectMaxDelay  = 5 * time.Minute
+)
+
 // MyNetworkClient implements the bridgev2.NetworkAPI for interacting
 // with the simple network on behalf of a specific user login.
 type MyNetworkClient struct {
@@ -31,7 +38,9 @@ type MyNetworkClient struct {
 	connectMu          sync.Mutex
 	cancel             context.CancelFunc
 	syncGeneration     uint64
+	syncHandlersReady  bool
 	reconnectScheduled bool
+	reconnectAttempts  int
 	loggedIn           bool
 	sentMu             sync.Mutex
 	sentEvents         map[id.EventID]struct{}
@@ -47,62 +56,42 @@ type MyNetworkClient struct {
 
 func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	nc.connectMu.Lock()
-	defer nc.connectMu.Unlock()
 	if nc.mx == nil {
 		nc.loggedIn = false
 		nc.log.Error().Msg("Remote Matrix client missing")
+		nc.connectMu.Unlock()
 		return
 	}
 	if nc.cancel != nil {
 		nc.loggedIn = true
 		nc.log.Debug().Msg("Remote Matrix client already connected")
+		nc.connectMu.Unlock()
+		return
+	}
+	if err := nc.remoteMatrixPreflight(ctx); err != nil {
+		nc.loggedIn = false
+		login := nc.login
+		shouldReconnect := !nc.reconnectScheduled
+		if shouldReconnect {
+			nc.reconnectScheduled = true
+		}
+		nc.connectMu.Unlock()
+		nc.sendTransientDisconnect(login, "REMOTE_MATRIX_UNREACHABLE", err)
+		nc.log.Err(err).Msg("Remote Matrix preflight failed")
+		if shouldReconnect {
+			go nc.reconnectAfterRemoteSyncFailure()
+		}
 		return
 	}
 	nc.loggedIn = true
 	nc.reconnectScheduled = false
+	nc.reconnectAttempts = 0
 	nc.login.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateConnected,
 		RemoteID:   nc.login.ID,
 	})
 	nc.refreshLocalMediaConfig(ctx)
-	syncer, ok := nc.mx.Syncer.(*mautrix.DefaultSyncer)
-	if ok {
-		syncer.FilterJSON = localMatrixSyncFilter()
-		syncer.OnSync(dropInitialTimelineEvents)
-		syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
-			nc.handleLocalMatrixEvent(ctx, evt)
-		})
-		syncer.OnEventType(event.EventReaction, func(ctx context.Context, evt *event.Event) {
-			nc.handleLocalMatrixReaction(ctx, evt)
-		})
-		syncer.OnEventType(event.EventRedaction, func(ctx context.Context, evt *event.Event) {
-			nc.handleLocalMatrixRedaction(ctx, evt)
-		})
-		syncer.OnEventType(event.EventUnstablePollStart, func(ctx context.Context, evt *event.Event) {
-			nc.handleLocalMatrixPoll(ctx, evt)
-		})
-		syncer.OnEventType(event.EventUnstablePollResponse, func(ctx context.Context, evt *event.Event) {
-			nc.handleLocalMatrixPollResponse(ctx, evt)
-		})
-		syncer.OnEventType(event.CallInvite, func(ctx context.Context, evt *event.Event) {
-			nc.handleLocalMatrixCallInvite(ctx, evt)
-		})
-		syncer.OnEventType(event.EphemeralEventTyping, func(ctx context.Context, evt *event.Event) {
-			nc.handleLocalMatrixTyping(ctx, evt)
-		})
-		syncer.OnEventType(event.EphemeralEventReceipt, func(ctx context.Context, evt *event.Event) {
-			nc.handleLocalMatrixReceipt(ctx, evt)
-		})
-		syncer.OnEventType(event.StateRoomName, func(ctx context.Context, evt *event.Event) {
-			nc.resyncLocalRoomInfo(ctx, evt.RoomID)
-		})
-		syncer.OnEventType(event.StateRoomAvatar, func(ctx context.Context, evt *event.Event) {
-			nc.resyncLocalRoomInfo(ctx, evt.RoomID)
-		})
-		syncer.OnEventType(event.StateTopic, func(ctx context.Context, evt *event.Event) {
-			nc.resyncLocalRoomInfo(ctx, evt.RoomID)
-		})
-	}
+	nc.configureLocalMatrixSyncer()
 	syncCtx, cancel := context.WithCancel(context.Background())
 	nc.syncGeneration++
 	generation := nc.syncGeneration
@@ -111,6 +100,53 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	go func() {
 		nc.handleSyncExit(generation, nc.mx.SyncWithContext(syncCtx))
 	}()
+	nc.connectMu.Unlock()
+}
+
+func (nc *MyNetworkClient) configureLocalMatrixSyncer() {
+	if nc.syncHandlersReady {
+		return
+	}
+	syncer, ok := nc.mx.Syncer.(*mautrix.DefaultSyncer)
+	if !ok {
+		return
+	}
+	syncer.FilterJSON = localMatrixSyncFilter()
+	syncer.OnSync(dropInitialTimelineEvents)
+	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
+		nc.handleLocalMatrixEvent(ctx, evt)
+	})
+	syncer.OnEventType(event.EventReaction, func(ctx context.Context, evt *event.Event) {
+		nc.handleLocalMatrixReaction(ctx, evt)
+	})
+	syncer.OnEventType(event.EventRedaction, func(ctx context.Context, evt *event.Event) {
+		nc.handleLocalMatrixRedaction(ctx, evt)
+	})
+	syncer.OnEventType(event.EventUnstablePollStart, func(ctx context.Context, evt *event.Event) {
+		nc.handleLocalMatrixPoll(ctx, evt)
+	})
+	syncer.OnEventType(event.EventUnstablePollResponse, func(ctx context.Context, evt *event.Event) {
+		nc.handleLocalMatrixPollResponse(ctx, evt)
+	})
+	syncer.OnEventType(event.CallInvite, func(ctx context.Context, evt *event.Event) {
+		nc.handleLocalMatrixCallInvite(ctx, evt)
+	})
+	syncer.OnEventType(event.EphemeralEventTyping, func(ctx context.Context, evt *event.Event) {
+		nc.handleLocalMatrixTyping(ctx, evt)
+	})
+	syncer.OnEventType(event.EphemeralEventReceipt, func(ctx context.Context, evt *event.Event) {
+		nc.handleLocalMatrixReceipt(ctx, evt)
+	})
+	syncer.OnEventType(event.StateRoomName, func(ctx context.Context, evt *event.Event) {
+		nc.resyncLocalRoomInfo(ctx, evt.RoomID)
+	})
+	syncer.OnEventType(event.StateRoomAvatar, func(ctx context.Context, evt *event.Event) {
+		nc.resyncLocalRoomInfo(ctx, evt.RoomID)
+	})
+	syncer.OnEventType(event.StateTopic, func(ctx context.Context, evt *event.Event) {
+		nc.resyncLocalRoomInfo(ctx, evt.RoomID)
+	})
+	nc.syncHandlersReady = true
 }
 
 func (nc *MyNetworkClient) handleSyncExit(generation uint64, err error) {
@@ -126,27 +162,75 @@ func (nc *MyNetworkClient) handleSyncExit(generation uint64, err error) {
 	}
 	nc.loggedIn = false
 	login := nc.login
+	if errors.Is(err, mautrix.MUnknownToken) {
+		nc.reconnectScheduled = false
+		nc.connectMu.Unlock()
+		nc.sendBadCredentials(login, err)
+		nc.log.Err(err).Msg("Remote Matrix sync token was rejected")
+		return
+	}
 	shouldReconnect := !nc.reconnectScheduled
 	if shouldReconnect {
 		nc.reconnectScheduled = true
 	}
 	nc.connectMu.Unlock()
-	if login != nil {
-		login.BridgeState.Send(status.BridgeState{
-			StateEvent: status.StateTransientDisconnect,
-			RemoteID:   login.ID,
-			Error:      status.BridgeStateErrorCode("REMOTE_MATRIX_SYNC_STOPPED"),
-			Reason:     err.Error(),
-		})
-	}
+	nc.sendTransientDisconnect(login, "REMOTE_MATRIX_SYNC_STOPPED", err)
 	nc.log.Err(err).Msg("Remote Matrix sync stopped")
 	if shouldReconnect {
 		go nc.reconnectAfterRemoteSyncFailure()
 	}
 }
 
+func (nc *MyNetworkClient) remoteMatrixPreflight(ctx context.Context) error {
+	preflightCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if _, err := nc.mx.Versions(preflightCtx); err != nil {
+		return fmt.Errorf("remote Matrix /versions failed: %w", err)
+	}
+	return nil
+}
+
+func (nc *MyNetworkClient) sendTransientDisconnect(login *bridgev2.UserLogin, code string, err error) {
+	if login == nil {
+		return
+	}
+	reason := ""
+	if err != nil {
+		reason = err.Error()
+	}
+	login.BridgeState.Send(status.BridgeState{
+		StateEvent: status.StateTransientDisconnect,
+		RemoteID:   login.ID,
+		Error:      status.BridgeStateErrorCode(code),
+		Reason:     reason,
+	})
+}
+
+func (nc *MyNetworkClient) sendBadCredentials(login *bridgev2.UserLogin, err error) {
+	if login == nil {
+		return
+	}
+	reason := ""
+	if err != nil {
+		reason = err.Error()
+	}
+	login.BridgeState.Send(status.BridgeState{
+		StateEvent: status.StateBadCredentials,
+		RemoteID:   login.ID,
+		Error:      status.BridgeStateErrorCode("REMOTE_MATRIX_BAD_CREDENTIALS"),
+		Reason:     reason,
+	})
+}
+
 func (nc *MyNetworkClient) reconnectAfterRemoteSyncFailure() {
-	time.Sleep(30 * time.Second)
+	nc.connectMu.Lock()
+	attempt := nc.reconnectAttempts
+	if nc.reconnectAttempts < 10 {
+		nc.reconnectAttempts++
+	}
+	delay := remoteReconnectDelay(attempt)
+	nc.connectMu.Unlock()
+	time.Sleep(delay)
 	nc.connectMu.Lock()
 	shouldReconnect := nc.cancel == nil && nc.mx != nil
 	nc.reconnectScheduled = false
@@ -156,6 +240,18 @@ func (nc *MyNetworkClient) reconnectAfterRemoteSyncFailure() {
 	}
 	nc.log.Info().Msg("Retrying remote Matrix sync after transient failure")
 	nc.Connect(context.Background())
+}
+
+func remoteReconnectDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	multiplier := math.Pow(2, float64(attempt))
+	delay := time.Duration(float64(remoteReconnectBaseDelay) * multiplier)
+	if delay > remoteReconnectMaxDelay {
+		return remoteReconnectMaxDelay
+	}
+	return delay
 }
 
 func (nc *MyNetworkClient) refreshLocalMediaConfig(ctx context.Context) {
