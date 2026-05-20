@@ -159,6 +159,7 @@ run_e2e_for_server() {
   (
     cd "$ROOT"
     LOCAL_SYNAPSE_E2E_SERVER_INDEX="$index" \
+    LOCAL_SYNAPSE_E2E_CONTAINER="${CONTAINERS[$array_index]}" \
     LOCAL_SYNAPSE_E2E_HS="http://127.0.0.1:$port" \
     LOCAL_SYNAPSE_E2E_USER_ID="$user_id" \
     LOCAL_SYNAPSE_E2E_ACCESS_TOKEN="$access_token" \

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	osexec "os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -260,6 +261,80 @@ func TestSynapseUploadLimitE2E(t *testing.T) {
 		t.Fatalf("expected oversized upload to return HTTP 413, got HTTP %d", status)
 	}
 	t.Logf("synapse upload limit small_bytes=%d large_bytes=%d oversized_status=%d", len(small), len(large), status)
+}
+
+func TestSynapseMediaConfigE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	uploadSize := client.mediaConfigUploadSize(ctx, t)
+	if uploadSize != 1024*1024 {
+		t.Fatalf("expected Synapse media config upload size 1048576, got %d", uploadSize)
+	}
+	t.Logf("synapse media config upload_size=%d", uploadSize)
+}
+
+func TestSynapseHistoryPaginationE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	filterID := client.uploadFilter(ctx, t)
+	roomID := client.createRoom(ctx, t)
+	nextBatch := client.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+
+	const want = 5
+	expected := make(map[string]struct{}, want)
+	for i := 0; i < want; i++ {
+		body := fmt.Sprintf("history-page-%02d", i)
+		expected[body] = struct{}{}
+		client.sendText(ctx, t, roomID, body, i)
+	}
+	if got := client.syncUntilBurstPrefix(ctx, t, filterID, nextBatch, roomID, "history-page-", want); got != want {
+		t.Fatalf("expected %d history seed messages through sync, got %d", want, got)
+	}
+	afterBatch := client.syncOnce(ctx, t, filterID, nextBatch, 0).NextBatch
+	if afterBatch == "" {
+		t.Fatal("post-history sync did not return next_batch")
+	}
+	found := client.paginateMessages(ctx, t, roomID, afterBatch, want, expected)
+	if found != want {
+		t.Fatalf("expected /messages pagination to return %d seeded messages, got %d", want, found)
+	}
+	t.Logf("synapse history pagination requested=%d found=%d", want, found)
+}
+
+func TestSynapseRestartContinuityE2E(t *testing.T) {
+	client := newSynapseE2EClient(t)
+	container := os.Getenv("LOCAL_SYNAPSE_E2E_CONTAINER")
+	if container == "" {
+		t.Skip("set LOCAL_SYNAPSE_E2E_CONTAINER to run the Synapse restart continuity test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	filterID := client.uploadFilter(ctx, t)
+	roomID := client.createRoom(ctx, t)
+	nextBatch := client.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+
+	client.sendText(ctx, t, roomID, "restart-before", 0)
+	beforeSeen := client.syncUntilBody(ctx, t, filterID, nextBatch, roomID, "restart-before")
+	if !beforeSeen {
+		t.Fatal("did not see pre-restart message")
+	}
+	nextBatch = client.syncOnce(ctx, t, filterID, nextBatch, 0).NextBatch
+	client.restartContainer(ctx, t, container)
+	client.sendText(ctx, t, roomID, "restart-after", 1)
+	afterSeen := client.syncUntilBody(ctx, t, filterID, nextBatch, roomID, "restart-after")
+	if !afterSeen {
+		t.Fatal("did not see post-restart message using previous sync token")
+	}
+	t.Logf("synapse restart continuity before=%v after=%v", beforeSeen, afterSeen)
 }
 
 func TestSynapseRoomStateProfileE2E(t *testing.T) {
@@ -804,6 +879,18 @@ func (c synapseE2EClient) uploadMediaResponse(ctx context.Context, t *testing.T,
 	return resp
 }
 
+func (c synapseE2EClient) mediaConfigUploadSize(ctx context.Context, t *testing.T) int64 {
+	t.Helper()
+	var out struct {
+		UploadSize int64 `json:"m.upload.size"`
+	}
+	c.doJSON(ctx, t, http.MethodGet, "/_matrix/media/v3/config", nil, &out)
+	if out.UploadSize <= 0 {
+		t.Fatalf("media config returned invalid upload size %d", out.UploadSize)
+	}
+	return out.UploadSize
+}
+
 func (c synapseE2EClient) downloadMedia(ctx context.Context, t *testing.T, contentURI id.ContentURIString) []byte {
 	t.Helper()
 	parsed, err := contentURI.Parse()
@@ -838,6 +925,55 @@ func (c synapseE2EClient) downloadMedia(ctx context.Context, t *testing.T, conte
 	}
 	t.Fatalf("media download returned HTTP %d for all media endpoints", lastStatus)
 	return nil
+}
+
+func (c synapseE2EClient) paginateMessages(ctx context.Context, t *testing.T, roomID id.RoomID, from string, limit int, want map[string]struct{}) int {
+	t.Helper()
+	values := url.Values{}
+	values.Set("from", from)
+	values.Set("dir", "b")
+	values.Set("limit", strconv.Itoa(limit+5))
+	var resp synapseMessagesResponse
+	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/messages?%s", url.PathEscape(string(roomID)), values.Encode())
+	c.doJSON(ctx, t, http.MethodGet, path, nil, &resp)
+	found := 0
+	for _, evt := range resp.Chunk {
+		if _, ok := want[evt.Content.Body]; ok {
+			found++
+		}
+	}
+	return found
+}
+
+func (c synapseE2EClient) restartContainer(ctx context.Context, t *testing.T, container string) {
+	t.Helper()
+	cmd := osexec.CommandContext(ctx, "docker", "restart", container)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker restart %s failed: %v: %s", container, err, output)
+	}
+	c.waitHealthy(ctx, t)
+}
+
+func (c synapseE2EClient) waitHealthy(ctx context.Context, t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := c.httpClient.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatal("Synapse did not become healthy after restart")
 }
 
 func (c synapseE2EClient) sendTopic(ctx context.Context, t *testing.T, roomID id.RoomID) {
@@ -903,6 +1039,11 @@ func (c synapseE2EClient) syncOnce(ctx context.Context, t *testing.T, filterID, 
 
 func (c synapseE2EClient) syncUntilBurstMessages(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, want int) int {
 	t.Helper()
+	return c.syncUntilBurstPrefix(ctx, t, filterID, since, roomID, "perf-burst-", want)
+}
+
+func (c synapseE2EClient) syncUntilBurstPrefix(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, prefix string, want int) int {
+	t.Helper()
 	seen := make(map[string]struct{}, want)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -912,7 +1053,7 @@ func (c synapseE2EClient) syncUntilBurstMessages(ctx context.Context, t *testing
 		}
 		if room := resp.Rooms.Join[roomID]; room != nil {
 			for _, evt := range room.Timeline.Events {
-				if evt.Type == "m.room.message" && strings.HasPrefix(evt.Content.Body, "perf-burst-") {
+				if evt.Type == "m.room.message" && strings.HasPrefix(evt.Content.Body, prefix) {
 					seen[evt.Content.Body] = struct{}{}
 				}
 			}
@@ -922,6 +1063,25 @@ func (c synapseE2EClient) syncUntilBurstMessages(ctx context.Context, t *testing
 		}
 	}
 	return len(seen)
+}
+
+func (c synapseE2EClient) syncUntilBody(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, body string) bool {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := c.syncOnce(ctx, t, filterID, since, 5*time.Second)
+		if resp.NextBatch != "" {
+			since = resp.NextBatch
+		}
+		if room := resp.Rooms.Join[roomID]; room != nil {
+			for _, evt := range room.Timeline.Events {
+				if evt.Type == "m.room.message" && evt.Content.Body == body {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (c synapseE2EClient) syncUntilRoomBursts(ctx context.Context, t *testing.T, filterID, since string, rooms []id.RoomID, wantPerRoom int) map[id.RoomID]int {
@@ -1153,6 +1313,15 @@ type synapseSyncResponse struct {
 			} `json:"timeline"`
 		} `json:"join"`
 	} `json:"rooms"`
+}
+
+type synapseMessagesResponse struct {
+	Chunk []struct {
+		Type    string `json:"type"`
+		Content struct {
+			Body string `json:"body"`
+		} `json:"content"`
+	} `json:"chunk"`
 }
 
 func envIntList(name string, fallback int) []int {

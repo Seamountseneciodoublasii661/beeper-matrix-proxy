@@ -31,6 +31,15 @@ MEDIA_RE = re.compile(
 UPLOAD_LIMIT_RE = re.compile(
     r"synapse upload limit small_bytes=(\d+) large_bytes=(\d+) oversized_status=(\d+)"
 )
+MEDIA_CONFIG_RE = re.compile(
+    r"synapse media config upload_size=(\d+)"
+)
+HISTORY_RE = re.compile(
+    r"synapse history pagination requested=(\d+) found=(\d+)"
+)
+RESTART_RE = re.compile(
+    r"synapse restart continuity before=(true|false) after=(true|false)"
+)
 ROOM_STATE_RE = re.compile(
     r"synapse room state profile counts=(map\[[^\]]+\])"
 )
@@ -56,6 +65,7 @@ DEFAULT_SYNAPSE_GATES = {
     "max_burst_sync_ms": 500,
     "max_mixed_modality_sync_ms": 500,
     "min_thirty_point_total": 30,
+    "require_edge_probes": True,
 }
 
 
@@ -144,6 +154,9 @@ def summarize_synapse(input_path: str) -> dict[str, object]:
         "dual_user": [],
         "media": [],
         "upload_limit": [],
+        "media_config": [],
+        "history": [],
+        "restart": [],
         "room_state": [],
         "relations": [],
         "poll_lifecycle": [],
@@ -210,6 +223,27 @@ def summarize_synapse(input_path: str) -> dict[str, object]:
                         "small_bytes": int(small_bytes),
                         "large_bytes": int(large_bytes),
                         "oversized_status": int(oversized_status),
+                    }
+                )
+                continue
+            if match := MEDIA_CONFIG_RE.search(line):
+                summary["media_config"].append({"upload_size": int(match.group(1))})
+                continue
+            if match := HISTORY_RE.search(line):
+                requested, found = match.groups()
+                summary["history"].append(
+                    {
+                        "requested": int(requested),
+                        "found": int(found),
+                    }
+                )
+                continue
+            if match := RESTART_RE.search(line):
+                before, after = match.groups()
+                summary["restart"].append(
+                    {
+                        "before": before == "true",
+                        "after": after == "true",
                     }
                 )
                 continue
@@ -329,6 +363,16 @@ def check_synapse_gates(summary: dict[str, object], gates: dict[str, float]) -> 
                 failures.append(f"30-point matrix passed {passed}/{total}")
             if isinstance(total, int) and total < min_thirty_total:
                 failures.append(f"30-point matrix total {total} below {min_thirty_total}")
+    if gates.get("require_edge_probes"):
+        for key in ("media_config", "history", "restart"):
+            if not summary.get(key):
+                failures.append(f"missing {key} Synapse E2E measurement")
+        for item in summary.get("history", []):
+            if isinstance(item, dict) and item.get("found") != item.get("requested"):
+                failures.append(f"history pagination found {item.get('found')}/{item.get('requested')}")
+        for item in summary.get("restart", []):
+            if isinstance(item, dict) and (not item.get("before") or not item.get("after")):
+                failures.append(f"restart continuity before={item.get('before')} after={item.get('after')}")
     return failures
 
 

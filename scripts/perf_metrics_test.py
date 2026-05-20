@@ -39,6 +39,9 @@ class PerfMetricsTest(unittest.TestCase):
                         "synapse dual-user sync counts=map[m.room.message:2] msgtypes=map[m.text:2] senders=map[@peer:example:1 @proxy:example:1]",
                         "synapse media upload/download msgtypes=map[m.file:1] bytes=29",
                         "synapse upload limit small_bytes=1024 large_bytes=2097152 oversized_status=413",
+                        "synapse media config upload_size=1048576",
+                        "synapse history pagination requested=5 found=5",
+                        "synapse restart continuity before=true after=true",
                         "synapse room state profile counts=map[m.room.avatar:1 m.room.name:1 m.room.topic:1]",
                         "synapse relations reply=true thread=true",
                         "synapse poll lifecycle counts=map[org.matrix.msc3381.poll.end:1 org.matrix.msc3381.poll.response:1 org.matrix.msc3381.poll.start:1]",
@@ -59,6 +62,9 @@ class PerfMetricsTest(unittest.TestCase):
         self.assertIn("@peer:example:1", summary["dual_user"][0]["senders"])
         self.assertEqual(summary["media"][0]["bytes"], 29)
         self.assertEqual(summary["upload_limit"][0]["oversized_status"], 413)
+        self.assertEqual(summary["media_config"][0]["upload_size"], 1048576)
+        self.assertEqual(summary["history"][0]["found"], 5)
+        self.assertTrue(summary["restart"][0]["after"])
         self.assertIn("m.room.avatar:1", summary["room_state"][0]["counts"])
         self.assertTrue(summary["relations"][0]["reply"])
         self.assertTrue(summary["relations"][0]["thread"])
@@ -91,7 +97,12 @@ class PerfMetricsTest(unittest.TestCase):
     def test_check_synapse_gates_reports_missing_and_slow_modalities(self):
         failures = perf_metrics.check_synapse_gates(
             {"bursts": [], "mixed_modality": None},
-            {"max_burst_sync_ms": 500, "max_mixed_modality_sync_ms": 500, "min_thirty_point_total": 30},
+            {
+                "max_burst_sync_ms": 500,
+                "max_mixed_modality_sync_ms": 500,
+                "min_thirty_point_total": 30,
+                "require_edge_probes": True,
+            },
         )
 
         self.assertIn("missing burst E2E measurements", failures)
@@ -103,14 +114,24 @@ class PerfMetricsTest(unittest.TestCase):
                 "bursts": [{"delivered": 9, "expected": 10, "sync_ms": 600}],
                 "mixed_modality": {"sync_ms": 750},
                 "thirty_point": [{"passed": 29, "total": 30}],
+                "media_config": [{"upload_size": 1048576}],
+                "history": [{"requested": 5, "found": 4}],
+                "restart": [{"before": True, "after": False}],
             },
-            {"max_burst_sync_ms": 500, "max_mixed_modality_sync_ms": 500, "min_thirty_point_total": 30},
+            {
+                "max_burst_sync_ms": 500,
+                "max_mixed_modality_sync_ms": 500,
+                "min_thirty_point_total": 30,
+                "require_edge_probes": True,
+            },
         )
 
-        self.assertEqual(len(failures), 4)
+        self.assertEqual(len(failures), 6)
         self.assertTrue(any("burst delivered 9/10" in item for item in failures))
         self.assertTrue(any("mixed modality sync_ms" in item for item in failures))
         self.assertTrue(any("30-point matrix passed 29/30" in item for item in failures))
+        self.assertTrue(any("history pagination found 4/5" in item for item in failures))
+        self.assertTrue(any("restart continuity" in item for item in failures))
 
     def test_merge_custom_gates_preserves_default_benchmark_gates(self):
         merged = perf_metrics.merge_gates(
@@ -130,6 +151,7 @@ class PerfMetricsTest(unittest.TestCase):
         self.assertIn("BenchmarkCloneRawMap", merged["benchmarks"])
         self.assertIn("max_mixed_modality_sync_ms", merged["synapse"])
         self.assertIn("min_thirty_point_total", merged["synapse"])
+        self.assertIn("require_edge_probes", merged["synapse"])
 
 
 if __name__ == "__main__":

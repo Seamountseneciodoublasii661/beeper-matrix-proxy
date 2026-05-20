@@ -52,9 +52,11 @@ public `main` branch.
   basics, text/formatting, media modalities, voice/GIF-shaped payloads, polls,
   room profile state, relations, dual-user delivery, upload/download, 413
   handling, typing, and receipts.
+- Real-server edge probes for media-config upload limits, `/messages` history
+  pagination, and Synapse restart continuity with an existing `/sync` token.
 - `LOCAL_SYNAPSE_E2E_RUN_REGEX` for faster focused local E2E loops.
 - Performance gates now require a complete 30/30 Synapse matrix whenever a
-  Synapse summary artifact is present.
+  Synapse summary artifact is present, plus the real edge probes above.
 
 ### Performance
 
