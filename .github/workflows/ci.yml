@@ -40,7 +40,7 @@ jobs:
         run: BENCH_COUNT=1 PERF_ENFORCE_GATES=1 ./scripts/perf.sh
 
       - name: Upload performance artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: perf-results

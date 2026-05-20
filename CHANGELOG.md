@@ -27,7 +27,8 @@ public `main` branch.
 - Optional `PERF_ENFORCE_GATES=1` mode, now enabled for the CI performance smoke
   benchmark.
 - GitHub Actions upgraded to Node 24-compatible action versions to avoid the
-  2026 Node 20 runner deprecation.
+  2026 Node 20 runner deprecation (`checkout@v5`, `setup-go@v6`,
+  `upload-artifact@v7`).
 
 ### Performance
 
