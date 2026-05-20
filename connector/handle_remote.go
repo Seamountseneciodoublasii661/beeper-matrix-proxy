@@ -561,15 +561,32 @@ func cloneRawMap(in map[string]any) map[string]any {
 	if in == nil {
 		return nil
 	}
-	raw, err := json.Marshal(in)
-	if err != nil {
-		return in
-	}
-	var out map[string]any
-	if json.Unmarshal(raw, &out) != nil {
-		return in
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneRawValue(value)
 	}
 	return out
+}
+
+func cloneRawValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneRawMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneRawValue(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneRawMap(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func remapRawRelationTarget(ctx context.Context, portal *bridgev2.Portal, raw map[string]any) {

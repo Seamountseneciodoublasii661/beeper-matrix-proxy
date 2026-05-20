@@ -276,6 +276,50 @@ func TestPersistentRemoteReactionSurvivesMemoryMapMiss(t *testing.T) {
 	}
 }
 
+func TestCloneRawMapDeepCopiesNestedValuesWithoutJSONRoundTripCost(t *testing.T) {
+	raw := map[string]any{
+		"org.matrix.msc3381.poll.start": map[string]any{
+			"question": map[string]any{"org.matrix.msc1767.text": "Question?"},
+			"answers": []any{
+				map[string]any{"id": "yes", "org.matrix.msc1767.text": "Yes"},
+				map[string]any{"id": "no", "org.matrix.msc1767.text": "No"},
+			},
+		},
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		cloned := cloneRawMap(raw)
+		start := cloned["org.matrix.msc3381.poll.start"].(map[string]any)
+		answers := start["answers"].([]any)
+		answers[0].(map[string]any)["org.matrix.msc1767.text"] = "Changed"
+	})
+
+	originalStart := raw["org.matrix.msc3381.poll.start"].(map[string]any)
+	originalAnswers := originalStart["answers"].([]any)
+	if got := originalAnswers[0].(map[string]any)["org.matrix.msc1767.text"]; got != "Yes" {
+		t.Fatalf("clone mutated original nested answer: %v", got)
+	}
+	if allocs > 15 {
+		t.Fatalf("cloneRawMap is too allocation-heavy for poll/raw-event hot paths: got %.1f allocs/run", allocs)
+	}
+}
+
+func BenchmarkCloneRawMap(b *testing.B) {
+	raw := map[string]any{
+		"org.matrix.msc3381.poll.start": map[string]any{
+			"question": map[string]any{"org.matrix.msc1767.text": "Question?"},
+			"answers": []any{
+				map[string]any{"id": "yes", "org.matrix.msc1767.text": "Yes"},
+				map[string]any{"id": "no", "org.matrix.msc1767.text": "No"},
+			},
+		},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = cloneRawMap(raw)
+	}
+}
+
 func TestRoomCapabilitiesExposeBoundedInteractiveFeatures(t *testing.T) {
 	features := (&MyNetworkClient{}).GetCapabilities(context.Background(), nil)
 

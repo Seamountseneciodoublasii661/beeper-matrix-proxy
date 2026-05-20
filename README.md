@@ -29,11 +29,15 @@ Docker Synapse E2E:
 | Message content clone allocations | 20 allocs/op | 5 allocs/op | 75% fewer |
 | Message content clone bytes | 1425 B/op | 576 B/op | ~60% fewer |
 | Repeated fallback avatar path | 38 allocs/run | 3 allocs/op | ~92% fewer |
+| Poll/raw event clone allocations | ~60 allocs/run | 12 allocs/op | ~80% fewer |
 | Default remote `/sync` burst window | 50 timeline events | 100 timeline events | 2x larger |
 | Local Synapse burst E2E | 40/40 messages | 100/100 messages | larger verified burst |
 
 The current 100-message Synapse burst test delivered all events with roughly
-`2.06s` send time and `27ms` sync pickup time in the local harness. These
+`1.73s` send time and `14ms` sync pickup time in the local harness. A mixed
+modality E2E run also verifies text, edit, sticker, reaction, redaction, poll
+start, room state, and call invite events against the same disposable Synapse.
+These
 numbers are not a production SLA, but they make the hot paths reproducible and
 guard against regressions.
 
@@ -83,6 +87,8 @@ Beeper during testing:
 - bounded echo-suppression cache for Beeper -> Matrix sent events
 - cached generated fallback avatars for stale or unavailable remote media
 - reproducible benchmarks and local Synapse burst E2E artifacts
+- mixed-modality local Synapse E2E coverage for text, edits, stickers,
+  reactions, redactions, polls, room state, and call notices
 
 The remaining work is mostly around completeness: richer voice/GIF behavior,
 two-phase sync checkpointing, full poll lifecycle support, sync-gap backfill,
@@ -262,7 +268,7 @@ Important test coverage:
 |---|---|
 | Sync burst filter, edits, polls, relation rewriting | `connector/bridge_contract_test.go` |
 | Media URLs and upload limits | `connector/media_test.go` |
-| Local Synapse burst sync E2E | `connector/synapse_e2e_test.go`, `e2e/synapse/run.sh` |
+| Local Synapse burst and mixed-modality sync E2E | `connector/synapse_e2e_test.go`, `e2e/synapse/run.sh` |
 
 Run the performance suite:
 
@@ -273,8 +279,18 @@ Run the performance suite:
 This writes human-readable and JSONL benchmark artifacts under
 `perf-results/<timestamp>/` by default. Override with `PERF_RESULTS_DIR=/path`.
 The default benchmark set covers the message-content clone hot path and cached
-fallback avatar generation for stale Matrix media. Override the benchmark regex
-with `BENCH_REGEX=...` when investigating a narrower path.
+fallback avatar generation for stale Matrix media, plus raw poll/event map
+cloning. Override the benchmark regex with `BENCH_REGEX=...` when investigating
+a narrower path.
+
+Generate CPU and memory profile artifacts:
+
+```bash
+PERF_PROFILE=1 ./scripts/perf.sh
+```
+
+This writes `cpu.pprof`, `mem.pprof`, `cpu-top.txt`, `mem-top.txt`, and
+`profile-bench.txt` alongside the normal benchmark artifacts.
 
 Run the full local Synapse E2E performance suite:
 
@@ -284,10 +300,10 @@ RUN_SYNAPSE_E2E=1 LOCAL_SYNAPSE_E2E_BURSTS=10,25,40 ./scripts/perf.sh
 
 The Synapse suite starts a disposable Docker Synapse using the official
 `matrixdotorg/synapse` image, registers a test user, uploads the bridge's sync
-filter, sends one or more message bursts, and verifies that the next `/sync`
-response contains every burst message. It raises Synapse test ratelimits in the
-temporary config so the test measures the bridge/filter behavior instead of
-default homeserver throttling.
+filter, sends one or more message bursts, verifies that `/sync` contains every
+burst message, and then runs a mixed-modality sync test. It raises Synapse test
+ratelimits in the temporary config so the test measures the bridge/filter
+behavior instead of default homeserver throttling.
 
 The live Matrix sync timeline limit defaults to `100` to preserve larger bursts
 without making every incremental `/sync` too heavy. Tune it with

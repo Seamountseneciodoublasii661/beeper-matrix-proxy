@@ -110,3 +110,17 @@ for burst_value in "${BURST_LIST[@]}"; do
     go test -tags synapse_e2e ./connector -run TestSynapseBurstSyncE2E -count=1 -v
   )
 done
+
+if [[ "${LOCAL_SYNAPSE_E2E_MODALITIES:-1}" == "1" ]]; then
+  echo "==> Running Go Synapse E2E mixed modality test"
+  (
+    cd "$ROOT"
+    LOCAL_SYNAPSE_E2E_HS="http://127.0.0.1:$PORT" \
+    LOCAL_SYNAPSE_E2E_USER_ID="$USER_ID" \
+    LOCAL_SYNAPSE_E2E_ACCESS_TOKEN="$ACCESS_TOKEN" \
+    LOCAL_MATRIX_SYNC_TIMELINE_LIMIT="$SYNC_TIMELINE_LIMIT" \
+    CGO_CFLAGS="${CGO_CFLAGS:-"-I/opt/homebrew/opt/libolm/include"}" \
+    CGO_LDFLAGS="${CGO_LDFLAGS:-"-L/opt/homebrew/opt/libolm/lib -lolm"}" \
+    go test -tags synapse_e2e ./connector -run TestSynapseMixedModalitySyncE2E -count=1 -v
+  )
+fi

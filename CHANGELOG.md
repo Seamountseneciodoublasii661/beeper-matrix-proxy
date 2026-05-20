@@ -13,6 +13,16 @@ public `main` branch.
   smoke benchmark.
 - README performance snapshot with measured hot-path improvements.
 - README link to this changelog.
+- Mixed-modality local Synapse E2E coverage for text, edits, stickers,
+  reactions, redactions, polls, room state, and call invites.
+- Optional performance profiling artifacts via `PERF_PROFILE=1 ./scripts/perf.sh`
+  (`cpu.pprof`, `mem.pprof`, and top reports).
+
+### Performance
+
+- Replace JSON round-tripping in `cloneRawMap` with targeted recursive cloning
+  for poll/raw-event payloads, reducing the measured test case from roughly 60
+  allocations to 12 allocations per clone.
 
 ## 2026-05-20
 
@@ -62,5 +72,6 @@ Latest measured local run on Apple M4 Pro:
 |---|---:|
 | `BenchmarkCloneMessageContent` | ~120 ns/op, 576 B/op, 5 allocs/op |
 | `BenchmarkGeneratedFallbackAvatarFromMXC` | ~48 ns/op, 160 B/op, 3 allocs/op |
+| `BenchmarkCloneRawMap` | ~641 ns/op, 1736 B/op, 12 allocs/op |
 | Local Synapse burst E2E | 10/10, 40/40, and 100/100 messages delivered |
-
+| Local Synapse mixed-modality E2E | text, edit, sticker, reaction, redaction, poll, room state, and call invite delivered |
