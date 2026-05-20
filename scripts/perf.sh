@@ -9,6 +9,38 @@ RESULTS_DIR="${PERF_RESULTS_DIR:-"$ROOT/perf-results/$(date -u +%Y%m%dT%H%M%SZ)"
 cd "$ROOT"
 mkdir -p "$RESULTS_DIR"
 
+python3 - "$RESULTS_DIR/metadata.json" "$BENCH_COUNT" "$BENCH_REGEX" <<'PY'
+import json
+import os
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+def run(cmd):
+    try:
+        return subprocess.check_output(cmd, text=True).strip()
+    except Exception:
+        return ""
+
+metadata = {
+    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    "git_commit": run(["git", "rev-parse", "HEAD"]),
+    "git_branch": run(["git", "branch", "--show-current"]),
+    "go_version": run(["go", "version"]),
+    "platform": platform.platform(),
+    "machine": platform.machine(),
+    "bench_count": sys.argv[2],
+    "bench_regex": sys.argv[3],
+    "run_synapse_e2e": os.environ.get("RUN_SYNAPSE_E2E", "0"),
+    "synapse_bursts": os.environ.get("LOCAL_SYNAPSE_E2E_BURSTS", os.environ.get("LOCAL_SYNAPSE_E2E_BURST", "")),
+    "perf_profile": os.environ.get("PERF_PROFILE", "0"),
+}
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(metadata, f, indent=2, sort_keys=True)
+    f.write("\n")
+PY
+
 echo "==> Go hot-path benchmarks"
 CGO_CFLAGS="${CGO_CFLAGS:-"-I/opt/homebrew/opt/libolm/include"}" \
 CGO_LDFLAGS="${CGO_LDFLAGS:-"-L/opt/homebrew/opt/libolm/lib -lolm"}" \

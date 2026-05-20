@@ -28,13 +28,13 @@ Docker Synapse E2E:
 | Message content clone latency | ~2408 ns/op | ~120 ns/op | ~20x faster |
 | Message content clone allocations | 20 allocs/op | 5 allocs/op | 75% fewer |
 | Message content clone bytes | 1425 B/op | 576 B/op | ~60% fewer |
-| Repeated fallback avatar path | 38 allocs/run | 3 allocs/op | ~92% fewer |
+| Repeated fallback avatar path | 38 allocs/run | 0 allocs/op | allocation-free cache hit |
 | Poll/raw event clone allocations | ~60 allocs/run | 12 allocs/op | ~80% fewer |
 | Default remote `/sync` burst window | 50 timeline events | 100 timeline events | 2x larger |
 | Local Synapse burst E2E | 40/40 messages | 100/100 messages | larger verified burst |
 
 The current 100-message Synapse burst test delivered all events with roughly
-`1.73s` send time and `14ms` sync pickup time in the local harness. A mixed
+`1.88s` send time and `15ms` sync pickup time in the local harness. A mixed
 modality E2E run also verifies text, edit, sticker, reaction, redaction, poll
 start, room state, and call invite events against the same disposable Synapse.
 These
@@ -276,7 +276,7 @@ Run the performance suite:
 ./scripts/perf.sh
 ```
 
-This writes human-readable and JSONL benchmark artifacts under
+This writes human-readable, JSONL, and run metadata artifacts under
 `perf-results/<timestamp>/` by default. Override with `PERF_RESULTS_DIR=/path`.
 The default benchmark set covers the message-content clone hot path and cached
 fallback avatar generation for stale Matrix media, plus raw poll/event map
@@ -290,7 +290,7 @@ PERF_PROFILE=1 ./scripts/perf.sh
 ```
 
 This writes `cpu.pprof`, `mem.pprof`, `cpu-top.txt`, `mem-top.txt`, and
-`profile-bench.txt` alongside the normal benchmark artifacts.
+`profile-bench.txt` alongside `bench.txt`, `bench.jsonl`, and `metadata.json`.
 
 Run the full local Synapse E2E performance suite:
 

@@ -17,12 +17,16 @@ public `main` branch.
   reactions, redactions, polls, room state, and call invites.
 - Optional performance profiling artifacts via `PERF_PROFILE=1 ./scripts/perf.sh`
   (`cpu.pprof`, `mem.pprof`, and top reports).
+- `metadata.json` in every performance result directory with commit, Go version,
+  platform, benchmark regex, and E2E/profile settings.
 
 ### Performance
 
 - Replace JSON round-tripping in `cloneRawMap` with targeted recursive cloning
   for poll/raw-event payloads, reducing the measured test case from roughly 60
   allocations to 12 allocations per clone.
+- Cache the complete generated fallback avatar object, reducing repeated
+  fallback avatar calls from 3 allocations to 0 allocations in the benchmark.
 
 ## 2026-05-20
 
@@ -70,8 +74,8 @@ Latest measured local run on Apple M4 Pro:
 
 | Benchmark | Result |
 |---|---:|
-| `BenchmarkCloneMessageContent` | ~120 ns/op, 576 B/op, 5 allocs/op |
-| `BenchmarkGeneratedFallbackAvatarFromMXC` | ~48 ns/op, 160 B/op, 3 allocs/op |
-| `BenchmarkCloneRawMap` | ~641 ns/op, 1736 B/op, 12 allocs/op |
+| `BenchmarkCloneMessageContent` | ~150 ns/op, 576 B/op, 5 allocs/op |
+| `BenchmarkGeneratedFallbackAvatarFromMXC` | ~5.9 ns/op, 0 B/op, 0 allocs/op |
+| `BenchmarkCloneRawMap` | ~664 ns/op, 1736 B/op, 12 allocs/op |
 | Local Synapse burst E2E | 10/10, 40/40, and 100/100 messages delivered |
 | Local Synapse mixed-modality E2E | text, edit, sticker, reaction, redaction, poll, room state, and call invite delivered |

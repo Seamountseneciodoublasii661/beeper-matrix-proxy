@@ -142,8 +142,7 @@ func (c synapseE2EClient) createRoom(ctx context.Context, t *testing.T) id.RoomI
 
 func (c synapseE2EClient) sendText(ctx context.Context, t *testing.T, roomID id.RoomID, body string, index int) id.EventID {
 	t.Helper()
-	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.room.message/perf-%d-%d", url.PathEscape(string(roomID)), time.Now().UnixNano(), index)
-	return c.sendEvent(ctx, t, path, map[string]any{
+	return c.sendRoomEvent(ctx, t, roomID, "m.room.message", fmt.Sprintf("perf-%d", index), map[string]any{
 		"msgtype": "m.text",
 		"body":    body,
 	})
@@ -151,8 +150,7 @@ func (c synapseE2EClient) sendText(ctx context.Context, t *testing.T, roomID id.
 
 func (c synapseE2EClient) sendSticker(ctx context.Context, t *testing.T, roomID id.RoomID) id.EventID {
 	t.Helper()
-	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.sticker/perf-sticker-%d", url.PathEscape(string(roomID)), time.Now().UnixNano())
-	return c.sendEvent(ctx, t, path, map[string]any{
+	return c.sendRoomEvent(ctx, t, roomID, "m.sticker", "perf-sticker", map[string]any{
 		"body": "modality-sticker",
 		"url":  "mxc://localhost/test-sticker",
 		"info": map[string]any{
@@ -165,8 +163,7 @@ func (c synapseE2EClient) sendSticker(ctx context.Context, t *testing.T, roomID 
 
 func (c synapseE2EClient) sendReaction(ctx context.Context, t *testing.T, roomID id.RoomID, target id.EventID) id.EventID {
 	t.Helper()
-	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.reaction/perf-reaction-%d", url.PathEscape(string(roomID)), time.Now().UnixNano())
-	return c.sendEvent(ctx, t, path, map[string]any{
+	return c.sendRoomEvent(ctx, t, roomID, "m.reaction", "perf-reaction", map[string]any{
 		"m.relates_to": map[string]any{
 			"rel_type": "m.annotation",
 			"event_id": string(target),
@@ -177,8 +174,7 @@ func (c synapseE2EClient) sendReaction(ctx context.Context, t *testing.T, roomID
 
 func (c synapseE2EClient) sendEdit(ctx context.Context, t *testing.T, roomID id.RoomID, target id.EventID) id.EventID {
 	t.Helper()
-	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.room.message/perf-edit-%d", url.PathEscape(string(roomID)), time.Now().UnixNano())
-	return c.sendEvent(ctx, t, path, map[string]any{
+	return c.sendRoomEvent(ctx, t, roomID, "m.room.message", "perf-edit", map[string]any{
 		"msgtype": "m.text",
 		"body":    "* modality-text-edited",
 		"m.new_content": map[string]any{
@@ -194,8 +190,7 @@ func (c synapseE2EClient) sendEdit(ctx context.Context, t *testing.T, roomID id.
 
 func (c synapseE2EClient) sendPollStart(ctx context.Context, t *testing.T, roomID id.RoomID) id.EventID {
 	t.Helper()
-	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/org.matrix.msc3381.poll.start/perf-poll-%d", url.PathEscape(string(roomID)), time.Now().UnixNano())
-	return c.sendEvent(ctx, t, path, map[string]any{
+	return c.sendRoomEvent(ctx, t, roomID, "org.matrix.msc3381.poll.start", "perf-poll", map[string]any{
 		"org.matrix.msc3381.poll.start": map[string]any{
 			"kind":           "org.matrix.msc3381.poll.undisclosed",
 			"max_selections": 1,
@@ -210,8 +205,7 @@ func (c synapseE2EClient) sendPollStart(ctx context.Context, t *testing.T, roomI
 
 func (c synapseE2EClient) sendCallInvite(ctx context.Context, t *testing.T, roomID id.RoomID) id.EventID {
 	t.Helper()
-	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.call.invite/perf-call-%d", url.PathEscape(string(roomID)), time.Now().UnixNano())
-	return c.sendEvent(ctx, t, path, map[string]any{
+	return c.sendRoomEvent(ctx, t, roomID, "m.call.invite", "perf-call", map[string]any{
 		"call_id":  "perf-call",
 		"lifetime": 60000,
 		"version":  1,
@@ -232,6 +226,18 @@ func (c synapseE2EClient) redactEvent(ctx context.Context, t *testing.T, roomID 
 	t.Helper()
 	path := fmt.Sprintf("/_matrix/client/v3/rooms/%s/redact/%s/perf-redact-%d", url.PathEscape(string(roomID)), url.PathEscape(string(target)), time.Now().UnixNano())
 	return c.sendEvent(ctx, t, path, map[string]any{"reason": "modality-redaction"})
+}
+
+func (c synapseE2EClient) sendRoomEvent(ctx context.Context, t *testing.T, roomID id.RoomID, eventType, txnPrefix string, content map[string]any) id.EventID {
+	t.Helper()
+	path := fmt.Sprintf(
+		"/_matrix/client/v3/rooms/%s/send/%s/%s-%d",
+		url.PathEscape(string(roomID)),
+		url.PathEscape(eventType),
+		txnPrefix,
+		time.Now().UnixNano(),
+	)
+	return c.sendEvent(ctx, t, path, content)
 }
 
 func (c synapseE2EClient) sendEvent(ctx context.Context, t *testing.T, path string, content map[string]any) id.EventID {

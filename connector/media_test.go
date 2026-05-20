@@ -184,8 +184,16 @@ func TestGenerateFallbackAvatarPNG(t *testing.T) {
 func TestGeneratedFallbackAvatarUsesCacheForRepeatedMXC(t *testing.T) {
 	nc := &MyNetworkClient{}
 	uri := id.ContentURIString("mxc://example.invalid/missing")
-	if avatar := nc.generatedFallbackAvatarFromMXC(uri); avatar == nil {
+	first := nc.generatedFallbackAvatarFromMXC(uri)
+	if first == nil {
 		t.Fatal("expected fallback avatar")
+	}
+	second := nc.generatedFallbackAvatarFromMXC(uri)
+	if second == nil {
+		t.Fatal("expected cached fallback avatar")
+	}
+	if first != second {
+		t.Fatal("expected repeated fallback avatar calls to reuse the cached avatar object")
 	}
 
 	allocs := testing.AllocsPerRun(1000, func() {
@@ -195,7 +203,7 @@ func TestGeneratedFallbackAvatarUsesCacheForRepeatedMXC(t *testing.T) {
 		}
 	})
 
-	if allocs > 10 {
+	if allocs > 1 {
 		t.Fatalf("expected repeated fallback avatar generation to be cached, got %.1f allocs/run", allocs)
 	}
 }

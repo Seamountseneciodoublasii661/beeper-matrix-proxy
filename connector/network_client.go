@@ -50,7 +50,7 @@ type MyNetworkClient struct {
 	sentEventOrder     []id.EventID
 	avatarMu           sync.Mutex
 	badAvatars         map[id.ContentURIString]struct{}
-	fallbackAvatars    map[id.ContentURIString][]byte
+	fallbackAvatars    map[id.ContentURIString]*bridgev2.Avatar
 	mediaMu            sync.RWMutex
 	localMaxUploadSize int64
 	typingMu           sync.Mutex
@@ -579,14 +579,9 @@ func (nc *MyNetworkClient) fallbackAvatarFromMXC(uri id.ContentURIString, err er
 
 func (nc *MyNetworkClient) generatedFallbackAvatarFromMXC(uri id.ContentURIString) *bridgev2.Avatar {
 	nc.avatarMu.Lock()
-	if data, ok := nc.fallbackAvatars[uri]; ok {
+	if avatar, ok := nc.fallbackAvatars[uri]; ok {
 		nc.avatarMu.Unlock()
-		return &bridgev2.Avatar{
-			ID: networkid.AvatarID("fallback:" + string(uri)),
-			Get: func(ctx context.Context) ([]byte, error) {
-				return append([]byte(nil), data...), nil
-			},
-		}
+		return avatar
 	}
 	nc.avatarMu.Unlock()
 
@@ -598,18 +593,19 @@ func (nc *MyNetworkClient) generatedFallbackAvatarFromMXC(uri id.ContentURIStrin
 			Msg("Failed to generate fallback Matrix avatar")
 		return nil
 	}
-	nc.avatarMu.Lock()
-	if nc.fallbackAvatars == nil {
-		nc.fallbackAvatars = make(map[id.ContentURIString][]byte)
-	}
-	nc.fallbackAvatars[uri] = data
-	nc.avatarMu.Unlock()
-	return &bridgev2.Avatar{
+	avatar := &bridgev2.Avatar{
 		ID: networkid.AvatarID("fallback:" + string(uri)),
 		Get: func(ctx context.Context) ([]byte, error) {
 			return append([]byte(nil), data...), nil
 		},
 	}
+	nc.avatarMu.Lock()
+	if nc.fallbackAvatars == nil {
+		nc.fallbackAvatars = make(map[id.ContentURIString]*bridgev2.Avatar)
+	}
+	nc.fallbackAvatars[uri] = avatar
+	nc.avatarMu.Unlock()
+	return avatar
 }
 
 func (nc *MyNetworkClient) markBadAvatar(uri id.ContentURIString, err error) {
