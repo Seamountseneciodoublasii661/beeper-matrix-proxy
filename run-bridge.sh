@@ -8,12 +8,16 @@ export LOCAL_MATRIX_INITIAL_BACKFILL_LIMIT="${LOCAL_MATRIX_INITIAL_BACKFILL_LIMI
 export BEEPER_MATRIX_PROXY_DIR="${BEEPER_MATRIX_PROXY_DIR:-$PWD}"
 export BEEPER_MATRIX_PROXY_BINARY="${BEEPER_MATRIX_PROXY_BINARY:-$BEEPER_MATRIX_PROXY_DIR/beeper-matrix-proxy}"
 export BEEPER_BRIDGE_NAME="${BEEPER_BRIDGE_NAME:-sh-vcvm-matrix}"
+export BEEPER_MATRIX_PROXY_AUTOBUILD="${BEEPER_MATRIX_PROXY_AUTOBUILD:-1}"
 export BEEPER_BBCTL="${BEEPER_BBCTL:-bbctl}"
 # Synapse advertises a very high media limit, but the HTTPS/proxy path currently
 # returns HTTP 413 for larger uploads. Keep Beeper's room_features conservative.
 export LOCAL_MATRIX_MAX_UPLOAD_SIZE="${LOCAL_MATRIX_MAX_UPLOAD_SIZE:-4194304}"
 
 cd "$BEEPER_MATRIX_PROXY_DIR"
+if [[ "$BEEPER_MATRIX_PROXY_AUTOBUILD" != "0" && ! -x "$BEEPER_MATRIX_PROXY_BINARY" ]]; then
+  go build -o "$BEEPER_MATRIX_PROXY_BINARY" .
+fi
 exec "$BEEPER_BBCTL" run \
   --type bridgev2 \
   --local-dev \
