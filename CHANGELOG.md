@@ -26,6 +26,8 @@ public `main` branch.
   performance gate checks.
 - Optional `PERF_ENFORCE_GATES=1` mode, now enabled for the CI performance smoke
   benchmark.
+- GitHub Actions upgraded to Node 24-compatible action versions to avoid the
+  2026 Node 20 runner deprecation.
 
 ### Performance
 

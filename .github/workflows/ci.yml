@@ -13,13 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install -y libolm-dev
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -40,7 +40,7 @@ jobs:
         run: BENCH_COUNT=1 PERF_ENFORCE_GATES=1 ./scripts/perf.sh
 
       - name: Upload performance artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: perf-results
