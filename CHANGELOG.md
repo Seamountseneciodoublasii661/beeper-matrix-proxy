@@ -48,6 +48,13 @@ public `main` branch.
   `LOCAL_SYNAPSE_E2E_PARALLEL=1`.
 - `synapse-summary.json` now also parses upload-limit, room-state profile, and
   relation E2E probes.
+- A real-server 30-point Synapse E2E matrix covering setup, burst-relevant sync
+  basics, text/formatting, media modalities, voice/GIF-shaped payloads, polls,
+  room profile state, relations, dual-user delivery, upload/download, 413
+  handling, typing, and receipts.
+- `LOCAL_SYNAPSE_E2E_RUN_REGEX` for faster focused local E2E loops.
+- Performance gates now require a complete 30/30 Synapse matrix whenever a
+  Synapse summary artifact is present.
 
 ### Performance
 

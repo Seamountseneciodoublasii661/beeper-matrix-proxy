@@ -43,6 +43,7 @@ class PerfMetricsTest(unittest.TestCase):
                         "synapse relations reply=true thread=true",
                         "synapse poll lifecycle counts=map[org.matrix.msc3381.poll.end:1 org.matrix.msc3381.poll.response:1 org.matrix.msc3381.poll.start:1]",
                         "synapse ephemeral sync typing=true receipt=true",
+                        "synapse 30-point matrix passed=30 total=30 duration=590.712833ms counts=map[m.room.message:13] msgtypes=map[m.text:6]",
                     ]
                 ),
                 encoding="utf-8",
@@ -64,6 +65,9 @@ class PerfMetricsTest(unittest.TestCase):
         self.assertIn("poll.start:1", summary["poll_lifecycle"][0]["counts"])
         self.assertTrue(summary["ephemeral"][0]["typing"])
         self.assertTrue(summary["ephemeral"][0]["receipt"])
+        self.assertEqual(summary["thirty_point"][0]["passed"], 30)
+        self.assertEqual(summary["thirty_point"][0]["total"], 30)
+        self.assertAlmostEqual(summary["thirty_point"][0]["duration_ms"], 590.712833)
 
     def test_check_bench_gates_reports_regressions(self):
         failures = perf_metrics.check_bench_gates(
@@ -87,23 +91,26 @@ class PerfMetricsTest(unittest.TestCase):
     def test_check_synapse_gates_reports_missing_and_slow_modalities(self):
         failures = perf_metrics.check_synapse_gates(
             {"bursts": [], "mixed_modality": None},
-            {"max_burst_sync_ms": 500, "max_mixed_modality_sync_ms": 500},
+            {"max_burst_sync_ms": 500, "max_mixed_modality_sync_ms": 500, "min_thirty_point_total": 30},
         )
 
         self.assertIn("missing burst E2E measurements", failures)
         self.assertIn("missing mixed modality E2E measurement", failures)
+        self.assertIn("missing 30-point Synapse E2E measurement", failures)
 
         failures = perf_metrics.check_synapse_gates(
             {
                 "bursts": [{"delivered": 9, "expected": 10, "sync_ms": 600}],
                 "mixed_modality": {"sync_ms": 750},
+                "thirty_point": [{"passed": 29, "total": 30}],
             },
-            {"max_burst_sync_ms": 500, "max_mixed_modality_sync_ms": 500},
+            {"max_burst_sync_ms": 500, "max_mixed_modality_sync_ms": 500, "min_thirty_point_total": 30},
         )
 
-        self.assertEqual(len(failures), 3)
+        self.assertEqual(len(failures), 4)
         self.assertTrue(any("burst delivered 9/10" in item for item in failures))
         self.assertTrue(any("mixed modality sync_ms" in item for item in failures))
+        self.assertTrue(any("30-point matrix passed 29/30" in item for item in failures))
 
     def test_merge_custom_gates_preserves_default_benchmark_gates(self):
         merged = perf_metrics.merge_gates(
@@ -122,6 +129,7 @@ class PerfMetricsTest(unittest.TestCase):
         )
         self.assertIn("BenchmarkCloneRawMap", merged["benchmarks"])
         self.assertIn("max_mixed_modality_sync_ms", merged["synapse"])
+        self.assertIn("min_thirty_point_total", merged["synapse"])
 
 
 if __name__ == "__main__":

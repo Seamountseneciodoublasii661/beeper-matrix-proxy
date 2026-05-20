@@ -95,6 +95,8 @@ Beeper during testing:
   state, and call notices
 - real Synapse checks for upload-limit enforcement, room profile state
   (`m.room.name`, `m.room.topic`, `m.room.avatar`), and reply/thread relations
+- one explicit 30-point Synapse E2E matrix that exercises the full dev checklist
+  on every disposable homeserver
 
 The remaining work is mostly around completeness: richer voice/GIF behavior,
 two-phase sync checkpointing, Beeper UI poll round-trip testing, sync-gap
@@ -299,7 +301,7 @@ Key artifacts:
 | `benchmark-summary.json` | Aggregated mean/min/max benchmark metrics. |
 | `metadata.json` | Commit, dirty flag, Go version, platform, and run settings. |
 | `synapse-e2e.txt` | Local Synapse E2E log when `RUN_SYNAPSE_E2E=1`. |
-| `synapse-summary.json` | Parsed burst, mixed-modality, multi-room, dual-user, media, upload-limit, room-state, relation, poll, and ephemeral E2E results. |
+| `synapse-summary.json` | Parsed burst, mixed-modality, multi-room, dual-user, media, upload-limit, room-state, relation, poll, ephemeral, and 30-point E2E results. |
 
 Enable performance gates:
 
@@ -331,7 +333,8 @@ The Synapse suite starts a disposable Docker Synapse using the official
 bridge's sync filter, sends one or more message bursts, verifies that `/sync`
 contains every burst message, and then runs mixed-modality, multi-room,
 dual-user, media upload/download, upload-limit, room-state profile,
-reply/thread relation, poll lifecycle, typing, and receipt tests. It
+reply/thread relation, poll lifecycle, typing, receipt, and 30-point checklist
+tests. It
 raises Synapse test ratelimits in the temporary config so the test measures the
 bridge/filter behavior instead of default homeserver throttling.
 
@@ -366,6 +369,13 @@ Current real-server E2E probes:
 | Reply/thread relations | `m.in_reply_to` and `m.thread` relations survive server round-trip. |
 | Poll lifecycle | Poll start, response, and end events are visible with the bridge filter. |
 | Ephemeral events | Typing and read receipts arrive through ephemeral `/sync` sections. |
+| 30-point matrix | One test asserts the full checklist across server setup, timeline events, media, state, relations, peer users, and ephemeral events. |
+
+Run only the 30-point matrix while iterating:
+
+```bash
+LOCAL_SYNAPSE_E2E_RUN_REGEX='TestSynapseThirtyPointE2EMatrix' ./e2e/synapse/run.sh
+```
 
 The live Matrix sync timeline limit defaults to `100` to preserve larger bursts
 without making every incremental `/sync` too heavy. Tune it with

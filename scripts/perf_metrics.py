@@ -43,6 +43,9 @@ POLL_RE = re.compile(
 EPHEMERAL_RE = re.compile(
     r"synapse ephemeral sync typing=(true|false) receipt=(true|false)"
 )
+THIRTY_POINT_RE = re.compile(
+    r"synapse 30-point matrix passed=(\d+) total=(\d+) duration=([^\s]+) counts=(map\[[^\]]+\]) msgtypes=(map\[[^\]]+\])"
+)
 
 DEFAULT_BENCH_GATES = {
     "BenchmarkCloneMessageContent": {"max_ns_per_op_mean": 2000, "max_allocs_per_op_mean": 8},
@@ -52,6 +55,7 @@ DEFAULT_BENCH_GATES = {
 DEFAULT_SYNAPSE_GATES = {
     "max_burst_sync_ms": 500,
     "max_mixed_modality_sync_ms": 500,
+    "min_thirty_point_total": 30,
 }
 
 
@@ -144,6 +148,7 @@ def summarize_synapse(input_path: str) -> dict[str, object]:
         "relations": [],
         "poll_lifecycle": [],
         "ephemeral": [],
+        "thirty_point": [],
     }
     with open(input_path, encoding="utf-8") as f:
         for line in f:
@@ -231,6 +236,18 @@ def summarize_synapse(input_path: str) -> dict[str, object]:
                         "receipt": receipt == "true",
                     }
                 )
+                continue
+            if match := THIRTY_POINT_RE.search(line):
+                passed, total, duration, counts, msgtypes = match.groups()
+                summary["thirty_point"].append(
+                    {
+                        "passed": int(passed),
+                        "total": int(total),
+                        "duration_ms": duration_ms(duration),
+                        "counts": counts,
+                        "msgtypes": msgtypes,
+                    }
+                )
     return summary
 
 
@@ -298,6 +315,20 @@ def check_synapse_gates(summary: dict[str, object], gates: dict[str, float]) -> 
         sync_ms = mixed.get("sync_ms")
         if isinstance(sync_ms, (int, float)) and sync_ms > max_mixed_sync:
             failures.append(f"mixed modality sync_ms={sync_ms:.3f} exceeds {max_mixed_sync}")
+    min_thirty_total = gates.get("min_thirty_point_total")
+    if min_thirty_total is not None:
+        items = summary.get("thirty_point", [])
+        if not items:
+            failures.append("missing 30-point Synapse E2E measurement")
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            passed = item.get("passed")
+            total = item.get("total")
+            if passed != total:
+                failures.append(f"30-point matrix passed {passed}/{total}")
+            if isinstance(total, int) and total < min_thirty_total:
+                failures.append(f"30-point matrix total {total} below {min_thirty_total}")
     return failures
 
 

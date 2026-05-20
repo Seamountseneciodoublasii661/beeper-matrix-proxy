@@ -352,6 +352,145 @@ func TestSynapseTypingReceiptE2E(t *testing.T) {
 	t.Logf("synapse ephemeral sync typing=%v receipt=%v", gotTyping, gotReceipt)
 }
 
+func TestSynapseThirtyPointE2EMatrix(t *testing.T) {
+	primary := newSynapseE2EClient(t)
+	peer := newSynapseE2EPeerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	checks := newSynapseE2EChecklist(30)
+	start := time.Now()
+	filterID := primary.uploadFilter(ctx, t)
+	checks.pass("filter upload")
+	roomID := primary.createRoom(ctx, t)
+	checks.pass("room create")
+	nextBatch := primary.syncOnce(ctx, t, filterID, "", 0).NextBatch
+	if nextBatch == "" {
+		t.Fatal("initial sync did not return next_batch")
+	}
+	checks.pass("initial sync checkpoint")
+
+	textID := primary.sendText(ctx, t, roomID, "thirty-text", 0)
+	primary.sendFormattedText(ctx, t, roomID)
+	primary.sendMessageModality(ctx, t, roomID, "m.notice", "thirty-notice", nil)
+	primary.sendMessageModality(ctx, t, roomID, "m.emote", "thirty-emote", nil)
+	primary.sendMessageModality(ctx, t, roomID, "m.image", "thirty-image.png", map[string]any{
+		"url": "mxc://localhost/thirty-image",
+		"info": map[string]any{
+			"mimetype": "image/png",
+			"w":        32,
+			"h":        32,
+		},
+	})
+	primary.sendMessageModality(ctx, t, roomID, "m.file", "thirty-file.txt", map[string]any{
+		"url":      "mxc://localhost/thirty-file",
+		"filename": "thirty-file.txt",
+		"info": map[string]any{
+			"mimetype": "text/plain",
+			"size":     11,
+		},
+	})
+	primary.sendVoiceMessage(ctx, t, roomID)
+	primary.sendGIFVideo(ctx, t, roomID)
+	primary.sendMessageModality(ctx, t, roomID, "m.location", "thirty-location", map[string]any{
+		"geo_uri": "geo:48.2082,16.3738",
+	})
+	stickerID := primary.sendSticker(ctx, t, roomID)
+	primary.sendReaction(ctx, t, roomID, textID)
+	primary.sendEdit(ctx, t, roomID, textID)
+	primary.redactEvent(ctx, t, roomID, stickerID)
+	primary.sendCallInvite(ctx, t, roomID)
+	pollID := primary.sendPollStart(ctx, t, roomID)
+	primary.sendPollResponse(ctx, t, roomID, pollID)
+	primary.sendPollEnd(ctx, t, roomID, pollID)
+	avatar := primary.uploadMedia(ctx, t, "thirty-avatar.png", "image/png", tinyPNG())
+	primary.sendName(ctx, t, roomID, "thirty-room-name")
+	primary.sendTopic(ctx, t, roomID)
+	primary.sendAvatar(ctx, t, roomID, avatar)
+	primary.sendReply(ctx, t, roomID, textID)
+	primary.sendThreadReply(ctx, t, roomID, textID)
+
+	primary.inviteUser(ctx, t, roomID, peer.userID)
+	peer.joinRoom(ctx, t, roomID)
+	peerEventID := peer.sendText(ctx, t, roomID, "thirty-peer-message", 0)
+	peer.sendTyping(ctx, t, roomID, true, 5000)
+	peer.sendReceipt(ctx, t, roomID, peerEventID)
+
+	uploaded := primary.uploadMedia(ctx, t, "thirty-media.txt", "text/plain", []byte("thirty-media"))
+	if string(primary.downloadMedia(ctx, t, uploaded)) != "thirty-media" {
+		t.Fatal("downloaded media mismatch in thirty-point matrix")
+	}
+	checks.pass("media upload/download")
+	large := bytes.Repeat([]byte("x"), 2*1024*1024)
+	if status := primary.uploadMediaStatus(ctx, t, "thirty-too-large.bin", "application/octet-stream", large); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected thirty-point oversized upload to return HTTP 413, got HTTP %d", status)
+	}
+	checks.pass("upload limit 413")
+
+	counts, msgTypes, senders := primary.syncUntilEventTypes(ctx, t, filterID, nextBatch, roomID, map[string]int{
+		"m.room.message":                   12,
+		"m.sticker":                        1,
+		"m.reaction":                       1,
+		"m.room.redaction":                 1,
+		"m.call.invite":                    1,
+		"org.matrix.msc3381.poll.start":    1,
+		"org.matrix.msc3381.poll.response": 1,
+		"org.matrix.msc3381.poll.end":      1,
+		"m.room.name":                      1,
+		"m.room.topic":                     1,
+		"m.room.avatar":                    1,
+	}, map[string]int{
+		"m.text":     4,
+		"m.notice":   1,
+		"m.emote":    1,
+		"m.image":    1,
+		"m.file":     1,
+		"m.audio":    1,
+		"m.video":    1,
+		"m.location": 1,
+	})
+	checks.pass("text message")
+	checks.pass("formatted text")
+	checks.pass("notice message")
+	checks.pass("emote message")
+	checks.pass("image metadata")
+	checks.pass("file metadata")
+	checks.pass("voice payload")
+	checks.pass("gif video payload")
+	checks.pass("location payload")
+	checks.pass("sticker event")
+	checks.pass("reaction event")
+	checks.pass("edit replacement")
+	checks.pass("redaction event")
+	checks.pass("call invite event")
+	checks.pass("poll start")
+	checks.pass("poll response")
+	checks.pass("poll end")
+	checks.pass("room name state")
+	checks.pass("room topic state")
+	checks.pass("room avatar state")
+	if senders[peer.userID] < 1 {
+		t.Fatalf("expected peer sender in thirty-point matrix, got senders=%v", senders)
+	}
+	checks.pass("dual-user sender")
+
+	replySeen, threadSeen := primary.syncUntilRelations(ctx, t, filterID, nextBatch, roomID, textID)
+	if !replySeen || !threadSeen {
+		t.Fatalf("expected reply and thread relations in thirty-point matrix, got reply=%v thread=%v", replySeen, threadSeen)
+	}
+	checks.pass("reply relation")
+	checks.pass("thread relation")
+	gotTyping, gotReceipt := primary.syncUntilEphemeral(ctx, t, filterID, nextBatch, roomID)
+	if !gotTyping || !gotReceipt {
+		t.Fatalf("expected typing and receipt in thirty-point matrix, got typing=%v receipt=%v", gotTyping, gotReceipt)
+	}
+	checks.pass("typing event")
+	checks.pass("read receipt")
+
+	checks.assertComplete(t)
+	t.Logf("synapse 30-point matrix passed=%d total=%d duration=%s counts=%v msgtypes=%v", checks.passed(), checks.total, time.Since(start), counts, msgTypes)
+}
+
 func newSynapseE2EClient(t *testing.T) synapseE2EClient {
 	t.Helper()
 	hs := os.Getenv("LOCAL_SYNAPSE_E2E_HS")
@@ -420,6 +559,16 @@ func (c synapseE2EClient) sendText(ctx context.Context, t *testing.T, roomID id.
 	})
 }
 
+func (c synapseE2EClient) sendFormattedText(ctx context.Context, t *testing.T, roomID id.RoomID) id.EventID {
+	t.Helper()
+	return c.sendRoomEvent(ctx, t, roomID, "m.room.message", "perf-formatted", map[string]any{
+		"msgtype":        "m.text",
+		"body":           "thirty formatted text",
+		"format":         "org.matrix.custom.html",
+		"formatted_body": "<strong>thirty</strong> formatted text",
+	})
+}
+
 func (c synapseE2EClient) sendReply(ctx context.Context, t *testing.T, roomID id.RoomID, target id.EventID) id.EventID {
 	t.Helper()
 	return c.sendRoomEvent(ctx, t, roomID, "m.room.message", "perf-reply", map[string]any{
@@ -444,6 +593,40 @@ func (c synapseE2EClient) sendThreadReply(ctx context.Context, t *testing.T, roo
 			"m.in_reply_to": map[string]any{
 				"event_id": string(target),
 			},
+		},
+	})
+}
+
+func (c synapseE2EClient) sendVoiceMessage(ctx context.Context, t *testing.T, roomID id.RoomID) id.EventID {
+	t.Helper()
+	return c.sendMessageModality(ctx, t, roomID, "m.audio", "thirty-voice.ogg", map[string]any{
+		"url": "mxc://localhost/thirty-voice",
+		"info": map[string]any{
+			"mimetype": "audio/ogg",
+			"duration": 1500,
+		},
+		"org.matrix.msc3245.voice": map[string]any{},
+		"org.matrix.msc1767.audio": map[string]any{
+			"duration": 1500,
+			"waveform": []int{0, 12, 24, 48, 24, 12, 0},
+		},
+	})
+}
+
+func (c synapseE2EClient) sendGIFVideo(ctx context.Context, t *testing.T, roomID id.RoomID) id.EventID {
+	t.Helper()
+	return c.sendMessageModality(ctx, t, roomID, "m.video", "thirty-animation.mp4", map[string]any{
+		"url": "mxc://localhost/thirty-gif",
+		"info": map[string]any{
+			"mimetype":             "video/mp4",
+			"duration":             900,
+			"w":                    64,
+			"h":                    64,
+			"fi.mau.gif":           true,
+			"fi.mau.loop":          true,
+			"fi.mau.autoplay":      true,
+			"fi.mau.hide_controls": true,
+			"fi.mau.no_audio":      true,
 		},
 	})
 }
@@ -878,6 +1061,33 @@ func hasEventTypeCounts(counts, want map[string]int) bool {
 		}
 	}
 	return true
+}
+
+type synapseE2EChecklist struct {
+	total int
+	seen  map[string]struct{}
+}
+
+func newSynapseE2EChecklist(total int) *synapseE2EChecklist {
+	return &synapseE2EChecklist{
+		total: total,
+		seen:  make(map[string]struct{}, total),
+	}
+}
+
+func (c *synapseE2EChecklist) pass(name string) {
+	c.seen[name] = struct{}{}
+}
+
+func (c *synapseE2EChecklist) passed() int {
+	return len(c.seen)
+}
+
+func (c *synapseE2EChecklist) assertComplete(t *testing.T) {
+	t.Helper()
+	if c.passed() != c.total {
+		t.Fatalf("expected %d completed E2E checks, got %d: %v", c.total, c.passed(), c.seen)
+	}
 }
 
 func (c synapseE2EClient) doJSON(ctx context.Context, t *testing.T, method, path string, reqBody any, out any) {
