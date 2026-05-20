@@ -235,18 +235,21 @@ Run the performance suite:
 ./scripts/perf.sh
 ```
 
+This writes human-readable and JSONL benchmark artifacts under
+`perf-results/<timestamp>/` by default. Override with `PERF_RESULTS_DIR=/path`.
+
 Run the full local Synapse E2E performance suite:
 
 ```bash
-RUN_SYNAPSE_E2E=1 LOCAL_SYNAPSE_E2E_BURST=40 ./scripts/perf.sh
+RUN_SYNAPSE_E2E=1 LOCAL_SYNAPSE_E2E_BURSTS=10,25,40 ./scripts/perf.sh
 ```
 
 The Synapse suite starts a disposable Docker Synapse using the official
 `matrixdotorg/synapse` image, registers a test user, uploads the bridge's sync
-filter, sends a burst of messages, and verifies that the next `/sync` response
-contains every burst message. It raises Synapse test ratelimits in the temporary
-config so the test measures the bridge/filter behavior instead of default
-homeserver throttling.
+filter, sends one or more message bursts, and verifies that the next `/sync`
+response contains every burst message. It raises Synapse test ratelimits in the
+temporary config so the test measures the bridge/filter behavior instead of
+default homeserver throttling.
 
 ## Design Notes
 

@@ -8,3 +8,4 @@ logs/
 .env
 sh-vcvm-matrix
 beeper-matrix-proxy
+perf-results/

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,19 +62,13 @@ func TestSynapseBurstSyncE2E(t *testing.T) {
 	}
 	sendDuration := time.Since(start)
 
-	resp := client.syncOnce(ctx, t, filterID, nextBatch, 30*time.Second)
-	got := 0
-	if room := resp.Rooms.Join[roomID]; room != nil {
-		for _, evt := range room.Timeline.Events {
-			if evt.Type == "m.room.message" {
-				got++
-			}
-		}
-	}
+	syncStart := time.Now()
+	got := client.syncUntilBurstMessages(ctx, t, filterID, nextBatch, roomID, count)
+	syncDuration := time.Since(syncStart)
 	if got != count {
 		t.Fatalf("expected %d burst messages in one sync, got %d", count, got)
 	}
-	t.Logf("synapse burst sync delivered %d/%d messages; send_duration=%s", got, count, sendDuration)
+	t.Logf("synapse burst sync delivered %d/%d messages; send_duration=%s sync_duration=%s", got, count, sendDuration, syncDuration)
 }
 
 func (c synapseE2EClient) uploadFilter(ctx context.Context, t *testing.T) string {
@@ -126,6 +121,29 @@ func (c synapseE2EClient) syncOnce(ctx context.Context, t *testing.T, filterID, 
 	return resp
 }
 
+func (c synapseE2EClient) syncUntilBurstMessages(ctx context.Context, t *testing.T, filterID, since string, roomID id.RoomID, want int) int {
+	t.Helper()
+	seen := make(map[string]struct{}, want)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := c.syncOnce(ctx, t, filterID, since, 5*time.Second)
+		if resp.NextBatch != "" {
+			since = resp.NextBatch
+		}
+		if room := resp.Rooms.Join[roomID]; room != nil {
+			for _, evt := range room.Timeline.Events {
+				if evt.Type == "m.room.message" && strings.HasPrefix(evt.Content.Body, "perf-burst-") {
+					seen[evt.Content.Body] = struct{}{}
+				}
+			}
+		}
+		if len(seen) >= want {
+			return len(seen)
+		}
+	}
+	return len(seen)
+}
+
 func (c synapseE2EClient) doJSON(ctx context.Context, t *testing.T, method, path string, reqBody any, out any) {
 	t.Helper()
 	var body *bytes.Reader
@@ -167,7 +185,10 @@ type synapseSyncResponse struct {
 		Join map[id.RoomID]*struct {
 			Timeline struct {
 				Events []struct {
-					Type string `json:"type"`
+					Type    string `json:"type"`
+					Content struct {
+						Body string `json:"body"`
+					} `json:"content"`
 				} `json:"events"`
 			} `json:"timeline"`
 		} `json:"join"`

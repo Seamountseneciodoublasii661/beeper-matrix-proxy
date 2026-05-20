@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE="${SYNAPSE_IMAGE:-matrixdotorg/synapse:latest}"
 SERVER_NAME="${SYNAPSE_SERVER_NAME:-localhost}"
 BURST="${LOCAL_SYNAPSE_E2E_BURST:-40}"
+BURSTS="${LOCAL_SYNAPSE_E2E_BURSTS:-$BURST}"
 PORT="${LOCAL_SYNAPSE_E2E_PORT:-}"
 DATA_DIR="${LOCAL_SYNAPSE_E2E_DATA_DIR:-}"
 CONTAINER="${LOCAL_SYNAPSE_E2E_CONTAINER:-beeper-matrix-proxy-synapse-$$}"
@@ -81,14 +82,19 @@ LOGIN_JSON="$(
 ACCESS_TOKEN="$(printf '%s' "$LOGIN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
 USER_ID="$(printf '%s' "$LOGIN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_id"])')"
 
-echo "==> Running Go Synapse E2E burst test with $BURST messages"
-(
-  cd "$ROOT"
-  LOCAL_SYNAPSE_E2E_HS="http://127.0.0.1:$PORT" \
-  LOCAL_SYNAPSE_E2E_USER_ID="$USER_ID" \
-  LOCAL_SYNAPSE_E2E_ACCESS_TOKEN="$ACCESS_TOKEN" \
-  LOCAL_SYNAPSE_E2E_BURST="$BURST" \
-  CGO_CFLAGS="${CGO_CFLAGS:-"-I/opt/homebrew/opt/libolm/include"}" \
-  CGO_LDFLAGS="${CGO_LDFLAGS:-"-L/opt/homebrew/opt/libolm/lib -lolm"}" \
-  go test -tags synapse_e2e ./connector -run TestSynapseBurstSyncE2E -count=1 -v
-)
+IFS=',' read -r -a BURST_LIST <<< "$BURSTS"
+for burst_value in "${BURST_LIST[@]}"; do
+  burst_value="$(printf '%s' "$burst_value" | xargs)"
+  [[ -n "$burst_value" ]] || continue
+  echo "==> Running Go Synapse E2E burst test with $burst_value messages"
+  (
+    cd "$ROOT"
+    LOCAL_SYNAPSE_E2E_HS="http://127.0.0.1:$PORT" \
+    LOCAL_SYNAPSE_E2E_USER_ID="$USER_ID" \
+    LOCAL_SYNAPSE_E2E_ACCESS_TOKEN="$ACCESS_TOKEN" \
+    LOCAL_SYNAPSE_E2E_BURST="$burst_value" \
+    CGO_CFLAGS="${CGO_CFLAGS:-"-I/opt/homebrew/opt/libolm/include"}" \
+    CGO_LDFLAGS="${CGO_LDFLAGS:-"-L/opt/homebrew/opt/libolm/lib -lolm"}" \
+    go test -tags synapse_e2e ./connector -run TestSynapseBurstSyncE2E -count=1 -v
+  )
+done
