@@ -1,0 +1,142 @@
+package beepersource
+
+import (
+	"io"
+	"time"
+)
+
+const (
+	SyncModeBidirectional = "bidirectional"
+	SyncModeReadOnly      = "read_only"
+)
+
+const (
+	MutationMessage  = "message"
+	MutationEdit     = "edit"
+	MutationDelete   = "delete"
+	MutationReaction = "reaction"
+)
+
+const (
+	MessageTypeText    = "TEXT"
+	MessageTypeNotice  = "NOTICE"
+	MessageTypeImage   = "IMAGE"
+	MessageTypeVideo   = "VIDEO"
+	MessageTypeAudio   = "AUDIO"
+	MessageTypeVoice   = "VOICE"
+	MessageTypeFile    = "FILE"
+	MessageTypeSticker = "STICKER"
+	MessageTypeUnknown = "UNKNOWN"
+)
+
+type Chat struct {
+	ID        string
+	AccountID string
+	Name      string
+	AvatarURL string
+	IsGroup   bool
+}
+
+type Sender struct {
+	ID          string
+	DisplayName string
+	AvatarID    string
+}
+
+type Attachment struct {
+	ID          string
+	URL         string
+	FileName    string
+	MimeType    string
+	SizeBytes   int64
+	Width       int
+	Height      int
+	DurationMS  int
+	IsVoiceNote bool
+	IsGIF       bool
+	IsSticker   bool
+}
+
+type Message struct {
+	ID              string
+	ChatID          string
+	SenderID        string
+	SenderName      string
+	Type            string
+	Text            string
+	HTML            string
+	Timestamp       time.Time
+	EditedTimestamp *time.Time
+	IsDeleted       bool
+	LinkedMessageID string
+	Attachments     []Attachment
+}
+
+type MatrixOutbound struct {
+	RoomID        string
+	MessageID     string
+	SenderID      string
+	SenderName    string
+	SenderMXID    string
+	Body          string
+	HTML          string
+	MsgType       string
+	Timestamp     time.Time
+	ReplyToEvent  string
+	TransactionID string
+	Media         *MatrixMedia
+}
+
+type AssetStream struct {
+	Content    io.ReadCloser
+	FileName   string
+	MimeType   string
+	SizeBytes  int64
+	StatusCode int
+}
+
+type MatrixMedia struct {
+	Content     io.Reader
+	Close       func() error
+	FileName    string
+	MimeType    string
+	SizeBytes   int64
+	Width       int
+	Height      int
+	DurationMS  int
+	IsGIF       bool
+	IsVoiceNote bool
+}
+
+type MatrixInbound struct {
+	ChatID        string
+	MatrixEventID string
+	Body          string
+	HTML          string
+	ReplyToEvent  string
+	Timestamp     time.Time
+}
+
+type BeeperOutbound struct {
+	ChatID      string
+	Text        string
+	HTML        string
+	ReplyToID   string
+	ClientTxnID string
+}
+
+type MessageMapping struct {
+	BeeperMessageID string
+	MatrixEventID   string
+	ChatID          string
+	Version         string
+	DeletedAt       *time.Time
+}
+
+type PendingMutation struct {
+	ID              int64
+	BeeperMessageID string
+	MutationType    string
+	PayloadJSON     []byte
+	CreatedAt       time.Time
+}

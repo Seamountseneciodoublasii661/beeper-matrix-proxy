@@ -9,6 +9,29 @@ public `main` branch.
 
 ### Added
 
+- `cmd/beeper-source`, an executable reconcile loop that reads Beeper Desktop
+  API chats and mirrors them into Matrix rooms.
+- Matrix client sink for `beeper-source` with room creation, deterministic
+  transaction IDs, optional invite target, sender-prefix fallback, and Beeper
+  per-message profile metadata.
+- Matrix `/sync` source for bidirectional `beeper-source` text messages from
+  Cinny/Matrix portal rooms back to Beeper.
+- Persistent outbound echo suppression so Matrix-originated Beeper sends are
+  mapped back to the original Matrix event instead of being mirrored twice.
+- Matrix-side configuration for homeserver URL, token env, user ID, invite
+  user, room prefix, sender fallback, and opt-in local self-signed TLS.
+- Tests that verify Matrix room creation and message send payloads against an
+  HTTP test homeserver.
+- `beeper-source` subsystem for the reverse direction: Beeper Desktop API as
+  source, your own Matrix/Synapse appservice as destination.
+- Official Beeper Desktop Go SDK pinned at `v5.0.1` with a healthcheck/send
+  adapter scaffold.
+- SQLite WAL state store for Beeper portal, puppet, message, reaction, pending
+  mutation, media cache, and queue tables.
+- Deterministic Matrix transaction IDs, bounded echo suppression, media fallback
+  decisions, and Deeper-style platform detection for Beeper account IDs.
+- Unit tests for the new Beeper-source config, SDK adapter, store, mapping,
+  pipeline, WebSocket subscription command, media policy, and safety behavior.
 - GitHub Actions CI for tests, vet, connector race tests, and a performance
   smoke benchmark.
 - README performance snapshot with measured hot-path improvements.

@@ -5,7 +5,9 @@ go 1.25.0
 toolchain go1.25.5
 
 require (
+	github.com/beeper/desktop-api-go/v5 v5.0.1
 	github.com/google/uuid v1.6.0
+	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/rs/zerolog v1.35.1
 	go.mau.fi/util v0.9.9
 	maunium.net/go/mautrix v0.28.0
@@ -18,7 +20,6 @@ require (
 	github.com/lib/pq v1.12.3 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-sqlite3 v1.14.44 // indirect
 	github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect

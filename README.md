@@ -9,14 +9,89 @@ stock Beeper client and a bridgev2 custom bridge.**
 [![Beeper](https://img.shields.io/badge/Beeper-bridgev2-35C759)](https://developers.beeper.com/bridges/self-hosting)
 [![Status](https://img.shields.io/badge/status-experimental-orange)](#current-status)
 
-`beeper-matrix-proxy` is an experimental Matrix-to-Beeper proxy built on
+`beeper-matrix-proxy` is an experimental Matrix/Beeper proxy built on
 [`mautrix-go` bridgev2](https://pkg.go.dev/maunium.net/go/mautrix/bridgev2).
-It treats a normal Matrix homeserver as the remote network and exposes joined
-rooms inside Beeper through Beeper's self-hosted bridge flow (`bbctl`).
+Its original mode treats a normal Matrix homeserver as the remote network and
+exposes joined rooms inside Beeper through Beeper's self-hosted bridge flow
+(`bbctl`). A new `beeper-source` subsystem starts the reverse direction:
+Beeper Desktop API as the source network, with your own Synapse/Matrix server as
+the destination appservice side.
 
 It does **not** patch Beeper Desktop. The bridge tries to speak the data contract
 that Beeper already understands: room features, Matrix events, media metadata,
 portal rooms, and appservice websocket traffic.
+
+## Beeper Source Mode
+
+`beeper-source` is the foundation for exposing Beeper's existing cloud/local
+accounts as standard Matrix rooms:
+
+```mermaid
+flowchart LR
+  A["Beeper Desktop API<br/>localhost:23373"] -->|REST source of truth| B["beeper-source<br/>Go + desktop-api-go/v5"]
+  A -->|experimental WebSocket trigger| B
+  B -->|SQLite WAL mapping + queues| C["Matrix sink"]
+  C --> D["Your Synapse"]
+  D --> E["Any Matrix client<br/>Element, FluffyChat, SchildiChat"]
+```
+
+The first implemented slice is intentionally infrastructure-heavy: SDK pinning,
+local-only config, deterministic Matrix transaction IDs, SQLite WAL schema,
+message/portal/puppet mapping, pending mutation storage, all-chat WebSocket
+subscription payloads, echo suppression, media size fallback policy, and
+Deeper-style platform detection. This gives the eventual Matrix appservice
+adapter a stable low-latency core without coupling it to Beeper Desktop UI
+patches.
+
+Current `beeper-source` implementation status:
+
+| Area | Status | Notes |
+|---|---:|---|
+| Beeper Desktop Go SDK | Supported | Pinned to `github.com/beeper/desktop-api-go/v5@v5.0.1`. |
+| `/v1/info` healthcheck | Supported | Uses the official SDK and keeps Beeper local-only by default. |
+| Chat/message REST abstraction | Partial | Adapter maps SDK chats/messages into bridge-neutral structs. |
+| WebSocket subscription | Supported | Generates Beeper's `subscriptions.set` all-chat command; reconnect loop is still next work. |
+| SQLite WAL state | Supported | Creates `portal`, `puppet`, `message_mapping`, `reaction_mapping`, `pending_mutation`, `media_cache`, and `queue`. |
+| Deterministic txn IDs | Supported | Stable hash from chat/message/mutation/version. |
+| Beeper -> Matrix text mirror core | Supported | `cmd/beeper-source` can create Matrix rooms and mirror Beeper text messages into them. |
+| Matrix -> Beeper text core | Supported | Matrix `/sync` reader forwards user text from portal rooms to Beeper with stored sync tokens. |
+| Cinny visibility | Supported | Verified in Cinny v4.11.1: WhatsApp, Signal, and sh-vcvm test rooms appear as Matrix rooms. |
+| Echo suppression | Supported | Persistent SQLite echo table maps Beeper echoes back to the original Matrix event. |
+| Media policy | Partial | Oversized-media fallback exists; streaming asset copy/upload is next work. |
+| Deeper enrichment | Partial | Platform detection implemented; contact merging and analytics reports are later. |
+
+### Show Beeper Bridges In Cinny
+
+Goal: use Cinny as a normal Matrix client and see chats from Beeper's connected
+accounts (WhatsApp, Telegram, Signal, X, and other Beeper-backed networks) as
+Matrix rooms on your own Synapse.
+
+```bash
+export BEEPER_ACCESS_TOKEN="..."
+export MATRIX_ACCESS_TOKEN="..."
+export BEEPER_MATRIX_PROXY_MATRIX_HOMESERVER_URL="https://vcvm.tail6a40cd.ts.net:3443"
+export BEEPER_MATRIX_PROXY_MATRIX_USER_ID="@openclaw:100.120.120.120"
+export BEEPER_MATRIX_PROXY_MATRIX_INVITE_USER_ID="@openclaw:100.120.120.120"
+export BEEPER_MATRIX_PROXY_MATRIX_INSECURE_TLS=true # only for the local VCVM self-signed cert
+
+go run ./cmd/beeper-source -db beeper-source.db -once
+```
+
+After the first reconcile pass, open Cinny at:
+
+```text
+https://vcvm.tail6a40cd.ts.net:3091/login/vcvm.tail6a40cd.ts.net:3443
+```
+
+The current implementation is a pragmatic v1 mirror: messages are sent by the
+configured Matrix account with a Beeper per-message profile and sender prefix so
+Cinny can show who wrote them. For bidirectional testing, run the proxy with a
+dedicated Matrix bridge account and set `BEEPER_MATRIX_PROXY_MATRIX_INVITE_USER_ID`
+to the Matrix user that will use Cinny. The Matrix `/sync` reader ignores events
+from the bridge account, forwards user-authored portal-room messages to Beeper,
+and suppresses the Beeper echo on the next reconcile pass. The next production
+step is a true Synapse appservice registration for one Matrix ghost user per
+Beeper sender.
 
 ## Performance Snapshot
 
@@ -32,6 +107,7 @@ Docker Synapse E2E:
 | Poll/raw event clone allocations | ~60 allocs/run | 12 allocs/op | ~80% fewer |
 | Default remote `/sync` burst window | 50 timeline events | 100 timeline events | 2x larger |
 | Local Synapse burst E2E | 40/40 messages | 100/100 messages | larger verified burst |
+| `beeper-source` 500-text-message reconcile benchmark | n/a | ~25.0 ms/op, 1.44 MB/op | tracked hot path |
 
 The current 100-message Synapse burst test delivered all events with roughly
 `1.88s` send time and `15ms` sync pickup time in the local harness. A mixed
@@ -48,7 +124,7 @@ guard against regressions.
 |---|---|
 | Can I sign into an arbitrary Matrix homeserver directly from Beeper Desktop? | Not generally. Beeper Desktop is designed around Beeper accounts and Beeper-managed bridge accounts. |
 | Can this project show rooms from my private Matrix server in Beeper? | Yes, that is the goal: private Matrix homeserver -> this bridge -> Beeper. |
-| Can this reuse Beeper Cloud's existing WhatsApp/Telegram/Signal bridges on my own Synapse? | Not directly. Those bridges are registered to Beeper's homeserver and account model. |
+| Can this reuse Beeper Cloud's existing WhatsApp/Telegram/Signal bridges on my own Synapse? | Experimentally, yes through `beeper-source`: Beeper Desktop API is treated as the source and your Synapse receives portal rooms. |
 | Can I run official/community bridges for my own Synapse instead? | Yes. Run the upstream Matrix bridge against your Synapse as its own appservice. |
 | Can one bridge feed both Beeper and my Synapse? | Usually not safely from the same database. Run separate bridge instances or build a dedicated fanout layer. |
 
@@ -136,6 +212,7 @@ Legend:
 | Read receipts | Supported | Both | Real Synapse ephemeral E2E | Exact Beeper receipts are sent to remote Matrix; remote Matrix receipts are queued to Beeper. |
 | Native audio/video calls | Not supported | Both | Intentionally hidden | Custom bridges should emit call notices/links instead of fake native call UI. |
 | End-to-end encryption | Planned | Both | Not implemented as a product feature | Needs a separate device, key, and trust model design. |
+| Beeper source rooms | Partial | Both for text, Beeper -> Matrix for media | Live Cinny/Beeper test groups + unit tests | New subsystem creates Matrix rooms from Beeper chats; true appservice ghost senders and Matrix -> Beeper media are next. |
 
 ## Can This Reuse Existing Beeper Bridges?
 
