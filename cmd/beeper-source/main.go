@@ -97,5 +97,8 @@ func applyRoomsOnlySafety(cfg *beepersource.Config) {
 	if _, explicit := os.LookupEnv("BEEPER_MATRIX_PROXY_MATRIX_SPACES"); !explicit {
 		cfg.Matrix.Spaces = true
 	}
+	if _, explicit := os.LookupEnv("BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX"); !explicit {
+		cfg.Matrix.RoomNamePrefix = ""
+	}
 	cfg.Matrix.RoomNameIncludePlatform = false
 }

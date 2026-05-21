@@ -98,11 +98,12 @@ anything back to real Beeper contacts:
 ```bash
 export BEEPER_MATRIX_PROXY_SYNC_MODE=read_only
 export BEEPER_MATRIX_PROXY_DISABLE_MATRIX_TO_BEEPER=true
-# rooms-only enables Matrix Spaces automatically and keeps Beeper chat avatars preferred
+# rooms-only enables Matrix Spaces automatically, omits duplicate Beeper/service prefixes,
+# and keeps Beeper chat avatars preferred
 export BEEPER_MATRIX_PROXY_PORTAL_WORKERS=8
 export BEEPER_MATRIX_PROXY_PORTAL_TIMEOUT_SECONDS=180
-# Optional: remove the "Beeper: " room-name prefix too
-# export BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX=""
+# Optional: explicitly restore a custom room-name prefix
+# export BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX="Beeper: "
 # Optional: export BEEPER_MATRIX_PROXY_INCLUDE_ARCHIVED=true
 unset BEEPER_MATRIX_PROXY_BEEPER_CHAT_IDS
 
@@ -127,7 +128,8 @@ of one long flat room list.
 Rooms-only mode omits the bracketed platform from room names because the Matrix
 Spaces already provide the service grouping. Set
 `BEEPER_MATRIX_PROXY_MATRIX_ROOM_INCLUDE_PLATFORM=true` to restore names like
-`Beeper: [Telegram] Chat Name`. Set
+`[Telegram] Chat Name`; set `BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX="Beeper: "`
+too if you explicitly want the old prefixed form. Set
 `BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS=true` only when you explicitly want
 every portal room to use the messenger logo instead of the Beeper/BIPA chat
 profile picture. With the default setting, Beeper `imgURL` avatars are fully

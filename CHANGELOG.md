@@ -44,7 +44,9 @@ public `main` branch.
   Beeper/BIPA chat avatars preferred over platform-logo room avatars.
 - `BEEPER_MATRIX_PROXY_MATRIX_ROOM_INCLUDE_PLATFORM` controls whether portal
   room names include bracketed service names such as `[Telegram]`; rooms-only
-  mode disables the bracket because Matrix Spaces group rooms by service.
+  mode disables the bracket and clears the default `Beeper: ` prefix because
+  Matrix Spaces group rooms by service. Explicit `BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX`
+  values are still preserved.
 - Relative Beeper/BIPA avatar asset URLs are resolved against
   `BEEPER_MATRIX_PROXY_BEEPER_BASE_URL` before download, so rooms can use the
   full chat/person profile picture when Beeper exposes one.

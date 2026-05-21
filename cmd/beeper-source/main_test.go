@@ -28,6 +28,9 @@ func TestApplyRoomsOnlySafetyForcesReadOnlyAndKillSwitch(t *testing.T) {
 	if cfg.Matrix.RoomNameIncludePlatform {
 		t.Fatal("expected rooms-only mode to omit platform brackets because spaces group rooms by service")
 	}
+	if cfg.Matrix.RoomNamePrefix != "" {
+		t.Fatalf("expected rooms-only mode to omit Beeper room-name prefix, got %q", cfg.Matrix.RoomNamePrefix)
+	}
 }
 
 func TestApplyRoomsOnlySafetyRespectsExplicitSpacesOff(t *testing.T) {
@@ -38,5 +41,16 @@ func TestApplyRoomsOnlySafetyRespectsExplicitSpacesOff(t *testing.T) {
 
 	if cfg.Matrix.Spaces {
 		t.Fatal("expected explicit Matrix spaces=false to be preserved for refresh-only imports")
+	}
+}
+
+func TestApplyRoomsOnlySafetyRespectsExplicitRoomNamePrefix(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX", "Beeper: ")
+	cfg := beepersource.DefaultConfig()
+
+	applyRoomsOnlySafety(&cfg)
+
+	if cfg.Matrix.RoomNamePrefix != "Beeper: " {
+		t.Fatalf("expected explicit room name prefix to be preserved, got %q", cfg.Matrix.RoomNamePrefix)
 	}
 }
