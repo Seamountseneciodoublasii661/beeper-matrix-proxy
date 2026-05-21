@@ -21,6 +21,12 @@ public `main` branch.
   Cinny/Matrix portal rooms back to Beeper.
 - Matrix `/sync` source support for Matrix -> Beeper media, edits, redactions,
   and reactions.
+- Bidirectional reply remapping for `beeper-source`: Beeper `linkedMessageID`
+  becomes Matrix `m.in_reply_to`, and Matrix `m.in_reply_to` becomes Beeper
+  `replyToMessageID`.
+- Post-sync reconcile in `cmd/beeper-source` when Matrix events were handled,
+  so Matrix-originated Beeper echo mappings stabilize in the same CLI run
+  without extra idle API calls.
 - Beeper Desktop API adapter support for multipart asset uploads, message
   updates, message deletes, and reaction add/remove calls.
 - Persistent outbound echo suppression so Matrix-originated Beeper sends are
@@ -92,7 +98,9 @@ public `main` branch.
 - Cache the complete generated fallback avatar object, reducing repeated
   fallback avatar calls from 3 allocations to 0 allocations in the benchmark.
 - Latest `beeper-source` 500-text-message reconcile benchmark on Apple M4 Pro:
-  `23546335 ns/op`, `1440584 B/op`, `31661 allocs/op`.
+  `26159423 ns/op`, `1440863 B/op`, `31662 allocs/op`.
+- Live one-run Matrix -> Beeper echo mapping check completed in roughly 2.32s
+  including Go process startup and Beeper/Matrix API roundtrips.
 
 ### Changed
 
@@ -108,6 +116,11 @@ public `main` branch.
   WhatsApp, and sh-vcvm Matrix rooms visible.
 - Live WhatsApp test group avatar E2E: Beeper local avatar media was uploaded to
   Matrix as `m.room.avatar` and Cinny showed the room avatar state change.
+- Live Signal reply E2E in both directions: Matrix reply mapped to Beeper
+  `linkedMessageID`, and Beeper reply mapped to Matrix `m.in_reply_to`.
+- Live Signal and WhatsApp media E2E in both directions for file, GIF, and
+  audio; Cinny rendered the Matrix rooms with file controls, GIF previews, and
+  audio playback controls.
 
 ## 2026-05-20
 

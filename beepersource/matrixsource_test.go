@@ -50,9 +50,12 @@ func TestMatrixSyncForwardsCinnyMessageToBeeper(t *testing.T) {
 	cfg.Matrix.UserID = "@bridge:local"
 	cfg.Matrix.InsecureSkipTLS = true
 	source := NewMatrixClientSource(cfg, store, "matrix-token")
-
-	if err := source.SyncOnce(ctx, svc); err != nil {
+	handled, err := source.SyncOnce(ctx, svc)
+	if err != nil {
 		t.Fatalf("SyncOnce returned error: %v", err)
+	}
+	if handled != 1 {
+		t.Fatalf("expected one handled Matrix event, got %d", handled)
 	}
 	if len(api.sent) != 1 {
 		t.Fatalf("expected one Beeper send, got %d", len(api.sent))
@@ -109,9 +112,12 @@ func TestMatrixSyncForwardsMediaToBeeper(t *testing.T) {
 	cfg.Matrix.UserID = "@bridge:local"
 	cfg.Matrix.InsecureSkipTLS = true
 	source := NewMatrixClientSource(cfg, store, "matrix-token")
-
-	if err := source.SyncOnce(ctx, svc); err != nil {
+	handled, err := source.SyncOnce(ctx, svc)
+	if err != nil {
 		t.Fatalf("SyncOnce returned error: %v", err)
+	}
+	if handled != 1 {
+		t.Fatalf("expected one handled media event, got %d", handled)
 	}
 	if len(api.sent) != 1 {
 		t.Fatalf("expected one Beeper send, got %d", len(api.sent))
@@ -181,9 +187,12 @@ func TestMatrixSyncForwardsEditDeleteAndReactionToBeeper(t *testing.T) {
 	cfg.Matrix.UserID = "@bridge:local"
 	cfg.Matrix.InsecureSkipTLS = true
 	source := NewMatrixClientSource(cfg, store, "matrix-token")
-
-	if err := source.SyncOnce(ctx, svc); err != nil {
+	handled, err := source.SyncOnce(ctx, svc)
+	if err != nil {
 		t.Fatalf("SyncOnce returned error: %v", err)
+	}
+	if handled != 3 {
+		t.Fatalf("expected three handled relation events, got %d", handled)
 	}
 	if len(api.updates) != 1 || api.updates[0].Text != "edited body" {
 		t.Fatalf("expected edit update, got %#v", api.updates)
@@ -231,8 +240,7 @@ func TestMatrixSyncIgnoresBridgeEchoes(t *testing.T) {
 	cfg.Matrix.UserID = "@bridge:local"
 	cfg.Matrix.InsecureSkipTLS = true
 	source := NewMatrixClientSource(cfg, store, "matrix-token")
-
-	if err := source.SyncOnce(ctx, svc); err != nil {
+	if _, err := source.SyncOnce(ctx, svc); err != nil {
 		t.Fatalf("SyncOnce returned error: %v", err)
 	}
 	if len(api.sent) != 0 {

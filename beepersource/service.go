@@ -210,6 +210,15 @@ func (s *Service) mirrorMessage(ctx context.Context, roomID string, msg Message)
 		Timestamp:     msg.Timestamp,
 		TransactionID: DeterministicTxnID(msg.ChatID, msg.ID, MutationMessage, version),
 	}
+	if msg.LinkedMessageID != "" {
+		replyTo, ok, err := s.store.MessageByBeeperID(ctx, msg.LinkedMessageID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			outbound.ReplyToEvent = replyTo.MatrixEventID
+		}
+	}
 	if media, err := s.matrixMedia(ctx, msg); err != nil {
 		outbound.MsgType = "m.notice"
 		outbound.Body = fmt.Sprintf("Unsupported or unavailable Beeper media: %s", err)
@@ -279,11 +288,21 @@ func (s *Service) HandleMatrixMessage(ctx context.Context, inbound MatrixInbound
 		version = inbound.Body
 	}
 	txnID := DeterministicTxnID(inbound.ChatID, inbound.MatrixEventID, MutationMessage, version)
+	replyToID := ""
+	if inbound.ReplyToEvent != "" {
+		replyTo, ok, err := s.store.MessageByMatrixEventID(ctx, inbound.ReplyToEvent)
+		if err != nil {
+			return err
+		}
+		if ok {
+			replyToID = replyTo.BeeperMessageID
+		}
+	}
 	_, err := s.api.SendMessage(ctx, BeeperOutbound{
 		ChatID:      inbound.ChatID,
 		Text:        inbound.Body,
 		HTML:        inbound.HTML,
-		ReplyToID:   inbound.ReplyToEvent,
+		ReplyToID:   replyToID,
 		ClientTxnID: txnID,
 		Attachment:  inbound.Attachment,
 	})

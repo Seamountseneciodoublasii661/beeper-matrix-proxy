@@ -42,9 +42,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "reconcile failed: %v\n", err)
 			return
 		}
-		if err := matrixSource.SyncOnce(ctx, svc); err != nil {
+		handled, err := matrixSource.SyncOnce(ctx, svc)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "matrix sync failed: %v\n", err)
 			return
+		}
+		if handled > 0 {
+			if err := svc.ReconcileOnce(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "post-sync reconcile failed: %v\n", err)
+				return
+			}
 		}
 		fmt.Fprintln(os.Stderr, "reconcile completed")
 	}

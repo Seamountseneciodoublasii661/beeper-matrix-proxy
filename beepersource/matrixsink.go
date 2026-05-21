@@ -174,6 +174,9 @@ func (m *MatrixClientSink) SendMessage(ctx context.Context, outbound MatrixOutbo
 			content.MSC1767Audio = &event.MSC1767Audio{Duration: outbound.Media.DurationMS}
 		}
 	}
+	if outbound.ReplyToEvent != "" {
+		content.GetRelatesTo().SetReplyTo(id.EventID(outbound.ReplyToEvent))
+	}
 	if m.cfg.Matrix.PrefixSender && outbound.SenderName != "" {
 		content.Body = outbound.SenderName + ": " + content.Body
 	}

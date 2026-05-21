@@ -18,6 +18,7 @@ func TestMatrixClientSinkCreatesRoomAndSendsMessage(t *testing.T) {
 	var sentBody string
 	var sentURL string
 	var sentFileName string
+	var sentReplyTo string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/createRoom"):
@@ -50,9 +51,14 @@ func TestMatrixClientSinkCreatesRoomAndSendsMessage(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"content_uri": "mxc://local/uploaded"})
 		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/send/m.room.message/"):
 			var body struct {
-				Body     string `json:"body"`
-				URL      string `json:"url"`
-				FileName string `json:"filename"`
+				Body      string `json:"body"`
+				URL       string `json:"url"`
+				FileName  string `json:"filename"`
+				RelatesTo struct {
+					InReplyTo struct {
+						EventID string `json:"event_id"`
+					} `json:"m.in_reply_to"`
+				} `json:"m.relates_to"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode send body: %v", err)
@@ -60,6 +66,7 @@ func TestMatrixClientSinkCreatesRoomAndSendsMessage(t *testing.T) {
 			sentBody = body.Body
 			sentURL = body.URL
 			sentFileName = body.FileName
+			sentReplyTo = body.RelatesTo.InReplyTo.EventID
 			_ = json.NewEncoder(w).Encode(map[string]string{"event_id": "$event:local"})
 		default:
 			t.Fatalf("unexpected Matrix request %s %s", r.Method, r.URL.Path)
@@ -111,6 +118,26 @@ func TestMatrixClientSinkCreatesRoomAndSendsMessage(t *testing.T) {
 	}
 	if sentBody != "Alice: hello" {
 		t.Fatalf("unexpected Matrix body %q", sentBody)
+	}
+
+	eventID, err = sink.SendMessage(ctx, MatrixOutbound{
+		RoomID:        roomID,
+		MessageID:     "$m-reply",
+		SenderID:      "@alice:whatsapp",
+		SenderName:    "Alice",
+		Body:          "reply",
+		MsgType:       "m.text",
+		ReplyToEvent:  "$parent:local",
+		TransactionID: "txn-reply",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventID != "$event:local" {
+		t.Fatalf("unexpected reply event ID %q", eventID)
+	}
+	if sentReplyTo != "$parent:local" {
+		t.Fatalf("expected m.in_reply_to target, got %q", sentReplyTo)
 	}
 
 	eventID, err = sink.SendMessage(ctx, MatrixOutbound{

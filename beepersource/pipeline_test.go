@@ -133,6 +133,46 @@ func TestReconcileMirrorsImageAttachmentAsMatrixMedia(t *testing.T) {
 	}
 }
 
+func TestReconcileMapsBeeperLinkedMessageToMatrixReply(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	if err := store.UpsertMessageMapping(ctx, MessageMapping{
+		BeeperMessageID: "$beeper-parent",
+		MatrixEventID:   "$matrix-parent:local",
+		ChatID:          "!chat:beeper",
+		Version:         "parent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{
+		chats: []Chat{{ID: "!chat:beeper", AccountID: "signal", Name: "Reply Test"}},
+		messages: map[string][]Message{
+			"!chat:beeper": {{
+				ID:              "$beeper-reply",
+				ChatID:          "!chat:beeper",
+				SenderID:        "@alice:signal",
+				Type:            MessageTypeText,
+				Text:            "reply from beeper",
+				LinkedMessageID: "$beeper-parent",
+				Timestamp:       time.Unix(100, 0).UTC(),
+			}},
+		},
+	}
+	matrix := &fakeMatrixSink{}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+
+	if err := svc.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce returned error: %v", err)
+	}
+	if len(matrix.events) != 1 {
+		t.Fatalf("expected one Matrix event, got %d", len(matrix.events))
+	}
+	if matrix.events[0].ReplyToEvent != "$matrix-parent:local" {
+		t.Fatalf("expected Matrix reply target to be remapped, got %q", matrix.events[0].ReplyToEvent)
+	}
+}
+
 func TestReconcileDownloadsChatAvatarForNewPortal(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -272,6 +312,38 @@ func TestMatrixToBeeperUsesDeterministicEchoKey(t *testing.T) {
 	}
 	if api.sent[0].ClientTxnID == "" {
 		t.Fatal("expected deterministic client transaction ID")
+	}
+}
+
+func TestMatrixToBeeperRemapsReplyTargetToBeeperMessageID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	if err := store.UpsertMessageMapping(ctx, MessageMapping{
+		BeeperMessageID: "$beeper-parent",
+		MatrixEventID:   "$matrix-parent:local",
+		ChatID:          "!chat:beeper",
+		Version:         "parent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{}
+	svc := NewService(DefaultConfig(), store, api, &fakeMatrixSink{})
+
+	err := svc.HandleMatrixMessage(ctx, MatrixInbound{
+		ChatID:        "!chat:beeper",
+		MatrixEventID: "$matrix-reply:local",
+		ReplyToEvent:  "$matrix-parent:local",
+		Body:          "reply from matrix",
+	})
+	if err != nil {
+		t.Fatalf("HandleMatrixMessage returned error: %v", err)
+	}
+	if len(api.sent) != 1 {
+		t.Fatalf("expected one Beeper send, got %d", len(api.sent))
+	}
+	if api.sent[0].ReplyToID != "$beeper-parent" {
+		t.Fatalf("expected Beeper reply ID to be remapped, got %q", api.sent[0].ReplyToID)
 	}
 }
 

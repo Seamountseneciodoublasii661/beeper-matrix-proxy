@@ -73,6 +73,11 @@ Latest local E2E evidence from 2026-05-21:
 | Matrix/Cinny -> Beeper text + image | WhatsApp | Text `165911` and image `165912` arrived with filename, MIME type, and dimensions. |
 | Cinny room list | VCVM Synapse | Browser-verified rooms: `Beeper BotE2E:[signal] Test`, `Beeper BotE2E:[whatsapp] Test`, `Beeper BotE2E:[sh-vcvm-matrix] Test`, plus the non-bot test rooms. |
 | Beeper chat avatar -> Matrix room icon | WhatsApp | Live WhatsApp test room received `m.room.avatar` with an `mxc://` JPEG and Cinny showed `changed room avatar`. |
+| Matrix reply -> Beeper reply | Signal | Matrix `m.in_reply_to` was remapped to Beeper `linkedMessageID` (`166168 -> 166067`). |
+| Beeper reply -> Matrix reply | Signal | Beeper `replyToMessageID` was remapped to Matrix `m.in_reply_to` (`166220 -> $hbWt...`). |
+| Matrix/Cinny -> Beeper file, GIF, audio | Signal + WhatsApp | File, `image/gif` with `isGif:true`, and `audio/wav` arrived in both test groups. |
+| Beeper -> Matrix file, GIF, audio | Signal + WhatsApp | File, GIF, and audio arrived as `m.file`, `m.image` with `fi.mau.gif:true`, and `m.audio`. |
+| One-run echo mapping | Signal | Matrix -> Beeper message `166233` mapped back to the original Matrix event in one proxy run. |
 
 ### Show Beeper Bridges In Cinny
 
@@ -121,7 +126,8 @@ Docker Synapse E2E:
 | Poll/raw event clone allocations | ~60 allocs/run | 12 allocs/op | ~80% fewer |
 | Default remote `/sync` burst window | 50 timeline events | 100 timeline events | 2x larger |
 | Local Synapse burst E2E | 40/40 messages | 100/100 messages | larger verified burst |
-| `beeper-source` 500-text-message reconcile benchmark | ~25.0 ms/op, 1.44 MB/op | ~23.5 ms/op, 1.44 MB/op | ~5.6% faster in latest local run |
+| `beeper-source` 500-text-message reconcile benchmark | ~25.0 ms/op, 1.44 MB/op | ~26.2 ms/op, 1.44 MB/op | steady after reply/avatar additions |
+| Matrix -> Beeper echo mapping | required a second manual run | one proxy run when Matrix events were handled | faster stable mappings with no extra idle reconcile |
 
 The current 100-message Synapse burst test delivered all events with roughly
 `1.88s` send time and `15ms` sync pickup time in the local harness. A mixed
@@ -209,7 +215,7 @@ Legend:
 | Burst delivery | Supported | Matrix -> Beeper | Real Synapse E2E | Remote sync timeline limit is raised to avoid losing fast messages. |
 | Room discovery | Supported | Matrix -> Beeper | Live smoke test | Joined remote Matrix rooms are synced as Beeper portal rooms. |
 | Room name/topic/avatar | Supported | Matrix -> Beeper | Real Synapse E2E | Uses Matrix room state during chat sync. |
-| Replies | Supported | Both | Regression test + real Synapse relation E2E | Beeper-local event IDs are rewritten to remote Matrix IDs. |
+| Replies | Supported | Both | Regression test + live Signal test group E2E | Beeper-local event IDs are rewritten to Matrix IDs, and Matrix reply IDs are rewritten to Beeper message IDs. |
 | Threads | Partial | Both | Regression test + real Synapse relation E2E | Thread root IDs are rewritten; deeper Beeper UI behavior needs more testing. |
 | Reactions | Supported | Both | Regression test + live Signal test group E2E | Matrix reactions are mapped through Beeper's reaction API; restart-safe remove paths are covered by tests. |
 | Edits | Supported | Both | Regression test + live Signal test group E2E | Legacy Matrix edit fallback prefixes are stripped for Beeper rendering. |

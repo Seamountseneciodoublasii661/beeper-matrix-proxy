@@ -33,22 +33,23 @@ func NewMatrixClientSource(cfg Config, store *Store, accessToken string) *Matrix
 	}
 }
 
-func (m *MatrixClientSource) SyncOnce(ctx context.Context, service *Service) error {
+func (m *MatrixClientSource) SyncOnce(ctx context.Context, service *Service) (int, error) {
 	if m.cfg.Safety.DisableMatrixToBeeper || m.cfg.Sync.Mode == SyncModeReadOnly {
-		return nil
+		return 0, nil
 	}
 	since, err := m.store.GetValue(ctx, matrixSyncSinceKey)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	resp, err := m.sync(ctx, since)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	handled := 0
 	for roomID, room := range resp.Rooms.Join {
 		chatID, ok, err := m.store.PortalChatIDByRoomID(ctx, roomID)
 		if err != nil {
-			return err
+			return handled, err
 		}
 		if !ok {
 			continue
@@ -58,14 +59,15 @@ func (m *MatrixClientSource) SyncOnce(ctx context.Context, service *Service) err
 				continue
 			}
 			if err := m.handleEvent(ctx, service, chatID, ev); err != nil {
-				return err
+				return handled, err
 			}
+			handled++
 		}
 	}
 	if resp.NextBatch != "" {
-		return m.store.SetValue(ctx, matrixSyncSinceKey, resp.NextBatch)
+		return handled, m.store.SetValue(ctx, matrixSyncSinceKey, resp.NextBatch)
 	}
-	return nil
+	return handled, nil
 }
 
 func (m *MatrixClientSource) handleEvent(ctx context.Context, service *Service, chatID string, ev matrixSyncEvent) error {
@@ -90,6 +92,7 @@ func (m *MatrixClientSource) handleEvent(ctx context.Context, service *Service, 
 			MatrixEventID: ev.EventID,
 			Body:          body,
 			HTML:          ev.Content.FormattedBody,
+			ReplyToEvent:  ev.Content.RelatesTo.InReplyTo.EventID,
 		}
 		if ev.Content.URL != "" {
 			attachment, err := m.downloadAttachment(ctx, ev)
@@ -257,9 +260,12 @@ type matrixSyncEvent struct {
 			Body string `json:"body"`
 		} `json:"m.new_content"`
 		RelatesTo struct {
-			RelType string `json:"rel_type"`
-			EventID string `json:"event_id"`
-			Key     string `json:"key"`
+			RelType   string `json:"rel_type"`
+			EventID   string `json:"event_id"`
+			Key       string `json:"key"`
+			InReplyTo struct {
+				EventID string `json:"event_id"`
+			} `json:"m.in_reply_to"`
 		} `json:"m.relates_to"`
 	} `json:"content"`
 }
