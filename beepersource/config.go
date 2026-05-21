@@ -29,12 +29,16 @@ type MatrixConfig struct {
 	InviteUserID    string
 	RoomNamePrefix  string
 	PrefixSender    bool
+	PlatformAvatars bool
 	InsecureSkipTLS bool
 }
 
 type SyncConfig struct {
-	Mode       string
-	MaxSendRPS float64
+	Mode                 string
+	MaxSendRPS           float64
+	PortalWorkers        int
+	PortalTimeoutSeconds int
+	IncludeArchived      bool
 }
 
 type MediaConfig struct {
@@ -60,11 +64,15 @@ func DefaultConfig() Config {
 			InviteUserID:    envString("BEEPER_MATRIX_PROXY_MATRIX_INVITE_USER_ID", ""),
 			RoomNamePrefix:  envString("BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX", "Beeper: "),
 			PrefixSender:    envBool("BEEPER_MATRIX_PROXY_MATRIX_PREFIX_SENDER", true),
+			PlatformAvatars: envBool("BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS", false),
 			InsecureSkipTLS: envBool("BEEPER_MATRIX_PROXY_MATRIX_INSECURE_TLS", false),
 		},
 		Sync: SyncConfig{
-			Mode:       envString("BEEPER_MATRIX_PROXY_SYNC_MODE", SyncModeBidirectional),
-			MaxSendRPS: envFloat("BEEPER_MATRIX_PROXY_MAX_SEND_RPS", 1.0),
+			Mode:                 envString("BEEPER_MATRIX_PROXY_SYNC_MODE", SyncModeBidirectional),
+			MaxSendRPS:           envFloat("BEEPER_MATRIX_PROXY_MAX_SEND_RPS", 1.0),
+			PortalWorkers:        envInt("BEEPER_MATRIX_PROXY_PORTAL_WORKERS", 1),
+			PortalTimeoutSeconds: envInt("BEEPER_MATRIX_PROXY_PORTAL_TIMEOUT_SECONDS", 75),
+			IncludeArchived:      envBool("BEEPER_MATRIX_PROXY_INCLUDE_ARCHIVED", false),
 		},
 		Media: MediaConfig{
 			MaxUploadBytes: envInt64("BEEPER_MATRIX_PROXY_MEDIA_MAX_UPLOAD_BYTES", 0),
@@ -78,6 +86,12 @@ func DefaultConfig() Config {
 	}
 	if cfg.Sync.MaxSendRPS <= 0 {
 		cfg.Sync.MaxSendRPS = 1.0
+	}
+	if cfg.Sync.PortalWorkers <= 0 {
+		cfg.Sync.PortalWorkers = 1
+	}
+	if cfg.Sync.PortalTimeoutSeconds <= 0 {
+		cfg.Sync.PortalTimeoutSeconds = 75
 	}
 	return cfg
 }
@@ -104,6 +118,13 @@ func (c Config) AllowsBeeperChat(chatID string) bool {
 		}
 	}
 	return false
+}
+
+func (c Config) AllowsBeeperChatRecord(chat Chat) bool {
+	if chat.IsArchived && !c.Sync.IncludeArchived {
+		return false
+	}
+	return c.AllowsBeeperChat(chat.ID)
 }
 
 func (c Config) MatrixToken() (string, error) {
@@ -161,6 +182,18 @@ func envFloat(key string, fallback float64) float64 {
 		return fallback
 	}
 	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return fallback
 	}

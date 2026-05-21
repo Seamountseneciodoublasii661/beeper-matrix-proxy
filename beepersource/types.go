@@ -30,11 +30,13 @@ const (
 )
 
 type Chat struct {
-	ID        string
-	AccountID string
-	Name      string
-	AvatarURL string
-	IsGroup   bool
+	ID         string
+	AccountID  string
+	Network    string
+	Name       string
+	AvatarURL  string
+	IsGroup    bool
+	IsArchived bool
 }
 
 type Sender struct {
@@ -96,6 +98,9 @@ type AssetStream struct {
 }
 
 type MatrixMedia struct {
+	AssetID     string
+	ContentHash string
+	CachedMXC   string
 	Content     io.Reader
 	Close       func() error
 	FileName    string

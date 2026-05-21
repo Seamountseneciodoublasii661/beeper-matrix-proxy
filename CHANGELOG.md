@@ -17,6 +17,35 @@ public `main` branch.
 - Beeper chat avatar mirroring into Matrix portal room icons, including local
   Beeper media paths, `file://` paths, remote asset downloads, and refreshes for
   already-created rooms.
+- `cmd/beeper-source -rooms-only` to create/update Matrix rooms for all Beeper
+  chats without importing message history or enabling Matrix -> Beeper sends.
+- Paginated Beeper chat discovery via `/v1/chats`, so all chats are considered
+  instead of only the first API page.
+- Safe all-chat defaults for rooms-only imports: archived chats are skipped
+  unless `BEEPER_MATRIX_PROXY_INCLUDE_ARCHIVED=true` is set.
+- Configurable parallel portal creation via `BEEPER_MATRIX_PROXY_PORTAL_WORKERS`
+  so large Beeper accounts can be mirrored into Cinny without a fully
+  sequential room-creation bottleneck.
+- Best-effort rooms-only imports: one slow or failing Beeper chat no longer
+  aborts the whole all-chat import, and
+  `BEEPER_MATRIX_PROXY_PORTAL_TIMEOUT_SECONDS` controls the per-room retry
+  window.
+- Adaptive Matrix room-creation backpressure for rooms-only imports: `429
+  M_LIMIT_EXCEEDED` responses now honor `retry_after_ms`/`Retry-After`, retry
+  the individual portal, and reduce concurrent workers instead of aborting the
+  entire import.
+- Stale portal recovery for resumable rooms-only imports: existing portal rows
+  are checked for Matrix room accessibility and recreated when the Matrix room
+  is no longer reachable by the bridge account.
+- `cmd/beeper-source -rooms-only` now forcibly applies the safety mode for
+  all-chat imports by setting sync mode to read-only and disabling
+  Matrix -> Beeper sends regardless of the surrounding environment.
+- Platform avatar uploads are cached in SQLite `media_cache`, so hundreds of
+  WhatsApp/Signal/Telegram rooms can reuse the same Matrix `mxc://` icon
+  instead of reuploading identical SVGs.
+- Beeper `network` names on Matrix rooms plus optional generated platform SVG
+  avatars (`BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS=true`) for WhatsApp,
+  Signal, Telegram, and other services.
 - Matrix `/sync` source for bidirectional `beeper-source` text messages from
   Cinny/Matrix portal rooms back to Beeper.
 - Matrix `/sync` source support for Matrix -> Beeper media, edits, redactions,
@@ -48,6 +77,10 @@ public `main` branch.
 - Unit tests for the new Beeper-source config, SDK adapter, store, mapping,
   pipeline, WebSocket subscription command, media policy, and safety behavior.
 - README performance snapshot with measured hot-path improvements.
+- README live VCVM all-chat evidence: 700 discovered Beeper chats, 694 active,
+  6 archived, 701 Matrix portal rows, 0 missing active chats, 701/701 portal
+  rooms joined by `@cinny_beeper_test:100.120.120.120`, and a saved Cinny
+  screenshot at `/tmp/beeper-source-cinny-all-chats-final.png`.
 - README link to this changelog.
 - Mixed-modality local Synapse E2E coverage for text, image, file, audio, video,
   location, emote, notice, edits, stickers, reactions, redactions, polls, room
@@ -121,6 +154,10 @@ public `main` branch.
 - Live Signal and WhatsApp media E2E in both directions for file, GIF, and
   audio; Cinny rendered the Matrix rooms with file controls, GIF previews, and
   audio playback controls.
+- Live VCVM all-chat rooms-only import measured 700 Beeper chats via paginated
+  `/v1/chats` (690 active, 10 archived). The safe import runs with Matrix ->
+  Beeper disabled, platform SVG avatars, and resumable portal creation because
+  Synapse room creation rate-limits still apply.
 
 ## 2026-05-20
 

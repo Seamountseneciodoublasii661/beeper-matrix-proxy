@@ -56,8 +56,14 @@ func (a *DesktopAPIAdapter) ListChats(ctx context.Context) ([]Chat, error) {
 		return nil, err
 	}
 	chats := make([]Chat, 0, len(page.Items))
-	for _, item := range page.Items {
-		chats = append(chats, convertSDKChat(item.Chat))
+	for page != nil {
+		for _, item := range page.Items {
+			chats = append(chats, convertSDKChat(item.Chat))
+		}
+		page, err = page.GetNextPage()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return chats, nil
 }
@@ -205,11 +211,13 @@ func (a *DesktopAPIAdapter) RemoveReaction(ctx context.Context, chatID, messageI
 
 func convertSDKChat(in beeperdesktopapi.Chat) Chat {
 	return Chat{
-		ID:        in.ID,
-		AccountID: in.AccountID,
-		Name:      in.Title,
-		AvatarURL: in.ImgURL,
-		IsGroup:   string(in.Type) == "group",
+		ID:         in.ID,
+		AccountID:  in.AccountID,
+		Network:    in.Network,
+		Name:       in.Title,
+		AvatarURL:  in.ImgURL,
+		IsGroup:    string(in.Type) == "group",
+		IsArchived: in.IsArchived,
 	}
 }
 

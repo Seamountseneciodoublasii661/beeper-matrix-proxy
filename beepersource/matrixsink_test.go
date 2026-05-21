@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,8 +169,118 @@ func TestMatrixClientSinkCreatesRoomAndSendsMessage(t *testing.T) {
 	}
 }
 
+func TestMatrixClientSinkReusesCachedPortalAvatar(t *testing.T) {
+	uploadCount := 0
+	var roomAvatarURLs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/createRoom"):
+			var body struct {
+				InitialState []struct {
+					Type    string `json:"type"`
+					Content struct {
+						URL string `json:"url"`
+					} `json:"content"`
+				} `json:"initial_state"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode create room body: %v", err)
+			}
+			for _, state := range body.InitialState {
+				if state.Type == "m.room.avatar" {
+					roomAvatarURLs = append(roomAvatarURLs, state.Content.URL)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"room_id": "!room:local"})
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/upload"):
+			uploadCount++
+			_ = json.NewEncoder(w).Encode(map[string]string{"content_uri": "mxc://local/platform-whatsapp"})
+		default:
+			t.Fatalf("unexpected Matrix request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	cfg := DefaultConfig()
+	cfg.Matrix.HomeserverURL = server.URL
+	cfg.Matrix.UserID = "@proxy:local"
+	sink, err := NewMatrixClientSink(cfg, store, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	avatar := func() *MatrixMedia {
+		return &MatrixMedia{
+			AssetID:   "platform:WhatsApp",
+			Content:   bytes.NewReader([]byte("<svg/>")),
+			FileName:  "whatsapp.svg",
+			MimeType:  "image/svg+xml",
+			SizeBytes: 6,
+		}
+	}
+
+	if _, err = sink.EnsurePortal(ctx, Chat{ID: "!one:beeper", AccountID: "whatsapp", Network: "WhatsApp", Name: "One"}, avatar()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sink.EnsurePortal(ctx, Chat{ID: "!two:beeper", AccountID: "whatsapp", Network: "WhatsApp", Name: "Two"}, avatar()); err != nil {
+		t.Fatal(err)
+	}
+	if uploadCount != 1 {
+		t.Fatalf("expected one platform avatar upload, got %d", uploadCount)
+	}
+	if len(roomAvatarURLs) != 2 || roomAvatarURLs[0] != "mxc://local/platform-whatsapp" || roomAvatarURLs[1] != "mxc://local/platform-whatsapp" {
+		t.Fatalf("expected both rooms to use cached mxc, got %#v", roomAvatarURLs)
+	}
+}
+
+func TestMatrixClientSinkReturnsRateLimitRetryAfterForCreateRoom(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/createRoom") {
+			t.Fatalf("unexpected Matrix request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errcode":        "M_LIMIT_EXCEEDED",
+			"error":          "Too Many Requests",
+			"retry_after_ms": 37,
+		})
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	cfg := DefaultConfig()
+	cfg.Matrix.HomeserverURL = server.URL
+	cfg.Matrix.UserID = "@proxy:local"
+	sink, err := NewMatrixClientSink(cfg, store, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = sink.EnsurePortal(ctx, Chat{ID: "!limited:beeper", AccountID: "whatsapp", Name: "Limited"}, nil)
+	if err == nil {
+		t.Fatal("expected rate-limit error")
+	}
+	var rateErr *MatrixRateLimitError
+	if !errors.As(err, &rateErr) {
+		t.Fatalf("expected MatrixRateLimitError, got %T: %v", err, err)
+	}
+	if rateErr.RetryAfter != 37*time.Millisecond {
+		t.Fatalf("expected retry_after_ms to be preserved, got %s", rateErr.RetryAfter)
+	}
+	if rateErr.StatusCode != http.StatusTooManyRequests || rateErr.ErrCode != "M_LIMIT_EXCEEDED" {
+		t.Fatalf("unexpected rate-limit metadata: %#v", rateErr)
+	}
+}
+
 func TestMatrixClientSinkUpdatesExistingRoomAvatar(t *testing.T) {
 	var stateAvatarURL string
+	var sawName bool
+	var sawTopic bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/upload"):
@@ -186,6 +297,12 @@ func TestMatrixClientSinkUpdatesExistingRoomAvatar(t *testing.T) {
 			}
 			stateAvatarURL = body.URL
 			_ = json.NewEncoder(w).Encode(map[string]string{"event_id": "$avatar:local"})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/state/m.room.name/"):
+			sawName = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"event_id": "$name:local"})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/state/m.room.topic/"):
+			sawTopic = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"event_id": "$topic:local"})
 		default:
 			t.Fatalf("unexpected Matrix request %s %s", r.Method, r.URL.Path)
 		}
@@ -220,6 +337,9 @@ func TestMatrixClientSinkUpdatesExistingRoomAvatar(t *testing.T) {
 	}
 	if stateAvatarURL != "mxc://local/existing-avatar" {
 		t.Fatalf("expected avatar state update, got %q", stateAvatarURL)
+	}
+	if !sawName || !sawTopic {
+		t.Fatalf("expected existing room name/topic refresh, name=%v topic=%v", sawName, sawTopic)
 	}
 }
 

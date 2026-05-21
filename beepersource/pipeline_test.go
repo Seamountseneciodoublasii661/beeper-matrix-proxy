@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -202,6 +204,184 @@ func TestReconcileDownloadsChatAvatarForNewPortal(t *testing.T) {
 	}
 	if string(body) != "avatar-bytes" {
 		t.Fatalf("unexpected avatar body %q", string(body))
+	}
+}
+
+func TestReconcilePortalsOnlyCreatesRoomsWithoutMessages(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	api := &fakeBeeperAPI{
+		chats: []Chat{{
+			ID:        "!chat:beeper",
+			AccountID: "whatsapp",
+			Network:   "WhatsApp",
+			Name:      "Family",
+		}},
+		messages: map[string][]Message{
+			"!chat:beeper": {{
+				ID:     "$m1",
+				ChatID: "!chat:beeper",
+				Type:   MessageTypeText,
+				Text:   "should not import",
+			}},
+		},
+	}
+	matrix := &fakeMatrixSink{}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error: %v", err)
+	}
+	if len(matrix.avatars) != 1 {
+		t.Fatalf("expected platform avatar fallback, got %d", len(matrix.avatars))
+	}
+	if len(matrix.events) != 0 {
+		t.Fatalf("expected no message imports, got %#v", matrix.events)
+	}
+	roomID, ok, err := store.PortalRoomID(ctx, "!chat:beeper")
+	if err != nil || !ok || roomID == "" {
+		t.Fatalf("expected portal mapping, roomID=%q ok=%v err=%v", roomID, ok, err)
+	}
+}
+
+func TestReconcileCanPreferPlatformAvatarsOverChatAvatars(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	api := &fakeBeeperAPI{
+		chats: []Chat{{
+			ID:        "!chat:beeper",
+			AccountID: "whatsapp",
+			Network:   "WhatsApp",
+			Name:      "Has Real Avatar",
+			AvatarURL: "localmxc://real-avatar",
+		}},
+		messages: map[string][]Message{"!chat:beeper": nil},
+		assets:   map[string]string{"localmxc://real-avatar": "real-avatar"},
+	}
+	matrix := &fakeMatrixSink{}
+	cfg := DefaultConfig()
+	cfg.Matrix.PlatformAvatars = true
+	svc := NewService(cfg, store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error: %v", err)
+	}
+	if len(matrix.avatars) != 1 {
+		t.Fatalf("expected one platform avatar, got %d", len(matrix.avatars))
+	}
+	if matrix.avatars[0].MimeType != "image/svg+xml" {
+		t.Fatalf("expected platform SVG avatar, got %#v", matrix.avatars[0])
+	}
+}
+
+func TestReconcilePortalsOnlySkipsArchivedChatsByDefault(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	api := &fakeBeeperAPI{
+		chats: []Chat{{
+			ID:         "!archived:beeper",
+			AccountID:  "whatsapp",
+			Network:    "WhatsApp",
+			Name:       "Archived",
+			IsArchived: true,
+		}},
+	}
+	matrix := &fakeMatrixSink{}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error: %v", err)
+	}
+	if len(matrix.avatars) != 0 {
+		t.Fatalf("expected archived chat to be skipped, got %d avatars", len(matrix.avatars))
+	}
+	if roomID, ok, err := store.PortalRoomID(ctx, "!archived:beeper"); err != nil || ok || roomID != "" {
+		t.Fatalf("expected no archived portal mapping, roomID=%q ok=%v err=%v", roomID, ok, err)
+	}
+}
+
+func TestReconcilePortalsOnlyContinuesAfterPortalError(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	api := &fakeBeeperAPI{
+		chats: []Chat{
+			{ID: "!bad:beeper", AccountID: "signal", Name: "Bad"},
+			{ID: "!good:beeper", AccountID: "signal", Name: "Good"},
+		},
+	}
+	matrix := &fakeMatrixSink{failPortals: map[string]error{"!bad:beeper": errors.New("boom")}}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+
+	err := svc.ReconcilePortalsOnly(ctx)
+	if err == nil {
+		t.Fatal("expected portal error to be reported")
+	}
+	if _, ok, lookupErr := store.PortalRoomID(ctx, "!good:beeper"); lookupErr != nil || !ok {
+		t.Fatalf("expected good portal to still be stored, ok=%v err=%v", ok, lookupErr)
+	}
+}
+
+func TestReconcilePortalsOnlyRetriesRateLimitedPortalWithoutFailingImport(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	api := &fakeBeeperAPI{
+		chats: []Chat{
+			{ID: "!limited:beeper", AccountID: "signal", Name: "Limited"},
+			{ID: "!good:beeper", AccountID: "signal", Name: "Good"},
+		},
+	}
+	matrix := &fakeMatrixSink{
+		failPortalSequences: map[string][]error{
+			"!limited:beeper": {&MatrixRateLimitError{RetryAfter: time.Millisecond, StatusCode: http.StatusTooManyRequests, ErrCode: "M_LIMIT_EXCEEDED"}},
+		},
+	}
+	cfg := DefaultConfig()
+	cfg.Sync.PortalWorkers = 2
+	cfg.Sync.PortalTimeoutSeconds = 2
+	svc := NewService(cfg, store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error after temporary 429: %v", err)
+	}
+	if got := matrix.portalAttempts["!limited:beeper"]; got != 2 {
+		t.Fatalf("expected rate-limited portal to be retried once, got %d attempts", got)
+	}
+	for _, chatID := range []string{"!limited:beeper", "!good:beeper"} {
+		if _, ok, err := store.PortalRoomID(ctx, chatID); err != nil || !ok {
+			t.Fatalf("expected portal %s to be stored after import, ok=%v err=%v", chatID, ok, err)
+		}
+	}
+}
+
+func TestReconcilePortalsOnlyRecreatesInaccessibleExistingPortal(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	chat := Chat{ID: "!stale:beeper", AccountID: "telegram", Network: "Telegram", Name: "Stale"}
+	if err := store.UpsertPortal(ctx, chat, "!old:local", ""); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{chats: []Chat{chat}}
+	matrix := &fakeMatrixSink{inaccessibleRooms: map[string]bool{"!old:local": true}}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error: %v", err)
+	}
+	roomID, ok, err := store.PortalRoomID(ctx, chat.ID)
+	if err != nil || !ok {
+		t.Fatalf("expected recreated portal mapping, ok=%v err=%v", ok, err)
+	}
+	if roomID == "!old:local" {
+		t.Fatalf("expected stale room to be replaced, still got %q", roomID)
+	}
+	if got := matrix.portalAttempts[chat.ID]; got != 1 {
+		t.Fatalf("expected inaccessible portal to be recreated once, got %d attempts", got)
 	}
 }
 
@@ -492,16 +672,40 @@ func (f *fakeBeeperAPI) RemoveReaction(ctx context.Context, chatID, messageID, r
 }
 
 type fakeMatrixSink struct {
-	events    []MatrixOutbound
-	failMedia bool
-	avatars   []*MatrixMedia
+	mu                  sync.Mutex
+	events              []MatrixOutbound
+	failMedia           bool
+	failPortals         map[string]error
+	failPortalSequences map[string][]error
+	inaccessibleRooms   map[string]bool
+	portalAttempts      map[string]int
+	avatars             []*MatrixMedia
 }
 
 func (f *fakeMatrixSink) EnsurePortal(ctx context.Context, chat Chat, avatar *MatrixMedia) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.portalAttempts == nil {
+		f.portalAttempts = make(map[string]int)
+	}
+	attempt := f.portalAttempts[chat.ID]
+	f.portalAttempts[chat.ID] = attempt + 1
+	if seq := f.failPortalSequences[chat.ID]; attempt < len(seq) && seq[attempt] != nil {
+		return "", seq[attempt]
+	}
+	if err := f.failPortals[chat.ID]; err != nil {
+		return "", err
+	}
 	if avatar != nil {
 		f.avatars = append(f.avatars, avatar)
 	}
 	return "!matrix-" + chat.ID, nil
+}
+
+func (f *fakeMatrixSink) PortalAccessible(ctx context.Context, roomID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.inaccessibleRooms[roomID], nil
 }
 
 func (f *fakeMatrixSink) EnsurePuppet(ctx context.Context, sender Sender) (string, error) {
@@ -509,6 +713,8 @@ func (f *fakeMatrixSink) EnsurePuppet(ctx context.Context, sender Sender) (strin
 }
 
 func (f *fakeMatrixSink) SendMessage(ctx context.Context, outbound MatrixOutbound) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.events = append(f.events, outbound)
 	if f.failMedia && outbound.Media != nil {
 		return "", errors.New("HTTP 413")

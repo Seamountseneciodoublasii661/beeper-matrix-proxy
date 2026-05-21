@@ -1,9 +1,11 @@
 package beepersource
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,6 +37,10 @@ type MatrixSink interface {
 	SendMessage(context.Context, MatrixOutbound) (string, error)
 }
 
+type MatrixPortalAccessChecker interface {
+	PortalAccessible(context.Context, string) (bool, error)
+}
+
 type Service struct {
 	cfg    Config
 	store  *Store
@@ -54,24 +61,12 @@ func (s *Service) ReconcileOnce(ctx context.Context) error {
 		return err
 	}
 	for _, chat := range chats {
-		if !s.cfg.AllowsBeeperChat(chat.ID) {
+		if !s.cfg.AllowsBeeperChatRecord(chat) {
 			continue
 		}
-		avatar, err := s.portalAvatar(ctx, chat)
+		roomID, err := s.ensurePortal(ctx, chat)
 		if err != nil {
-			return fmt.Errorf("prepare Matrix portal avatar for %s: %w", chat.ID, err)
-		}
-		roomID, err := s.matrix.EnsurePortal(ctx, chat, avatar)
-		if avatar != nil && avatar.Close != nil {
-			_ = avatar.Close()
-		}
-		if err != nil {
-			return fmt.Errorf("ensure Matrix portal for %s: %w", chat.ID, err)
-		}
-		if avatar != nil {
-			if err := s.store.SetValue(ctx, portalAvatarSyncKey(chat.ID), chat.AvatarURL); err != nil {
-				return err
-			}
+			return err
 		}
 		cursor, err := s.store.PortalCursor(ctx, chat.ID)
 		if err != nil {
@@ -93,9 +88,249 @@ func (s *Service) ReconcileOnce(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) ReconcilePortalsOnly(ctx context.Context) error {
+	if err := s.api.Health(ctx); err != nil {
+		return err
+	}
+	chats, err := s.api.ListChats(ctx)
+	if err != nil {
+		return err
+	}
+	missing := make([]Chat, 0, len(chats))
+	for _, chat := range chats {
+		if !s.cfg.AllowsBeeperChatRecord(chat) {
+			continue
+		}
+		if roomID, ok, err := s.store.PortalRoomID(ctx, chat.ID); err != nil {
+			return err
+		} else if ok {
+			if checker, ok := s.matrix.(MatrixPortalAccessChecker); ok {
+				accessible, err := checker.PortalAccessible(ctx, roomID)
+				if err != nil {
+					return fmt.Errorf("check Matrix portal accessibility for %s: %w", chat.ID, err)
+				}
+				if !accessible {
+					if err := s.store.DeletePortal(ctx, chat.ID); err != nil {
+						return err
+					}
+					missing = append(missing, chat)
+				}
+			}
+			continue
+		}
+		missing = append(missing, chat)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	workers := minPositive(s.cfg.Sync.PortalWorkers, len(missing))
+	backpressure := newPortalBackpressure(workers)
+	jobs := make(chan Chat)
+	errs := make(chan error, len(missing))
+	var wg sync.WaitGroup
+	timeout := time.Duration(s.cfg.Sync.PortalTimeoutSeconds) * time.Second
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for chat := range jobs {
+				chatCtx, chatCancel := context.WithTimeout(ctx, timeout)
+				err := s.ensurePortalWithBackoff(chatCtx, chat, backpressure)
+				chatCancel()
+				if err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	for _, chat := range missing {
+		select {
+		case jobs <- chat:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return ctx.Err()
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	close(errs)
+	var firstErr error
+	failures := 0
+	for err := range errs {
+		failures++
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return fmt.Errorf("%d portal room(s) failed and can be retried by rerunning rooms-only: %w", failures, firstErr)
+	}
+	return nil
+}
+
+func (s *Service) ensurePortalWithBackoff(ctx context.Context, chat Chat, backpressure *portalBackpressure) error {
+	attempt := 0
+	for {
+		release, err := backpressure.beforeAttempt(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = s.ensurePortal(ctx, chat)
+		if err == nil {
+			release(true)
+			return nil
+		}
+		var rateErr *MatrixRateLimitError
+		if !errors.As(err, &rateErr) {
+			release(false)
+			return err
+		}
+		attempt++
+		retryAfter := rateErr.RetryAfter
+		if retryAfter <= 0 {
+			retryAfter = adaptivePortalRetryDelay(attempt)
+		}
+		backpressure.noteRateLimit(retryAfter)
+		release(false)
+	}
+}
+
+type portalBackpressure struct {
+	mu       sync.Mutex
+	active   int
+	limit    int
+	maxLimit int
+	resumeAt time.Time
+}
+
+func newPortalBackpressure(workers int) *portalBackpressure {
+	workers = maxPositive(workers, 1)
+	return &portalBackpressure{limit: workers, maxLimit: workers}
+}
+
+func (p *portalBackpressure) beforeAttempt(ctx context.Context) (func(bool), error) {
+	for {
+		p.mu.Lock()
+		now := time.Now()
+		if p.active < p.limit && !now.Before(p.resumeAt) {
+			p.active++
+			p.mu.Unlock()
+			return func(success bool) {
+				p.mu.Lock()
+				if p.active > 0 {
+					p.active--
+				}
+				if success && p.limit < p.maxLimit {
+					p.limit++
+				}
+				p.mu.Unlock()
+			}, nil
+		}
+		wait := 10 * time.Millisecond
+		if now.Before(p.resumeAt) {
+			wait = time.Until(p.resumeAt)
+		}
+		p.mu.Unlock()
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (p *portalBackpressure) noteRateLimit(retryAfter time.Duration) {
+	if retryAfter <= 0 {
+		retryAfter = adaptivePortalRetryDelay(1)
+	}
+	p.mu.Lock()
+	if p.limit > 1 {
+		p.limit = maxPositive(1, p.limit/2)
+	}
+	next := time.Now().Add(retryAfter)
+	if next.After(p.resumeAt) {
+		p.resumeAt = next
+	}
+	p.mu.Unlock()
+}
+
+func adaptivePortalRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 6 {
+		attempt = 6
+	}
+	delay := time.Duration(250*(1<<(attempt-1))) * time.Millisecond
+	if delay > 5*time.Second {
+		return 5 * time.Second
+	}
+	return delay
+}
+
+func minPositive(a, b int) int {
+	if a <= 0 || (b > 0 && b < a) {
+		return b
+	}
+	return a
+}
+
+func maxPositive(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (s *Service) ensurePortal(ctx context.Context, chat Chat) (string, error) {
+	avatar, err := s.portalAvatar(ctx, chat)
+	if err != nil {
+		return "", fmt.Errorf("prepare Matrix portal avatar for %s: %w", chat.ID, err)
+	}
+	roomID, err := s.matrix.EnsurePortal(ctx, chat, avatar)
+	if avatar != nil && avatar.Close != nil {
+		_ = avatar.Close()
+	}
+	if err != nil {
+		return "", fmt.Errorf("ensure Matrix portal for %s: %w", chat.ID, err)
+	}
+	cursor, err := s.store.PortalCursor(ctx, chat.ID)
+	if err != nil {
+		return "", err
+	}
+	if err := s.store.UpsertPortal(ctx, chat, roomID, cursor); err != nil {
+		return "", err
+	}
+	if avatar != nil {
+		if err := s.store.SetValue(ctx, portalAvatarSyncKey(chat.ID), portalAvatarSyncValue(chat)); err != nil {
+			return "", err
+		}
+	}
+	return roomID, nil
+}
+
 func (s *Service) portalAvatar(ctx context.Context, chat Chat) (*MatrixMedia, error) {
+	if s.cfg.Matrix.PlatformAvatars {
+		lastAvatar, err := s.store.GetValue(ctx, portalAvatarSyncKey(chat.ID))
+		if err != nil || lastAvatar == platformAvatarSyncValue(chat) {
+			return nil, err
+		}
+		return platformAvatarMedia(chat), nil
+	}
 	if chat.AvatarURL == "" {
-		return nil, nil
+		lastAvatar, err := s.store.GetValue(ctx, portalAvatarSyncKey(chat.ID))
+		if err != nil || lastAvatar == platformAvatarSyncValue(chat) {
+			return nil, err
+		}
+		return platformAvatarMedia(chat), nil
 	}
 	lastAvatar, err := s.store.GetValue(ctx, portalAvatarSyncKey(chat.ID))
 	if err != nil || lastAvatar == chat.AvatarURL {
@@ -117,6 +352,25 @@ func (s *Service) portalAvatar(ctx context.Context, chat Chat) (*MatrixMedia, er
 		MimeType:  mimeType,
 		SizeBytes: asset.SizeBytes,
 	}, nil
+}
+
+func platformAvatarMedia(chat Chat) *MatrixMedia {
+	platform := PlatformDisplayName(chat)
+	initials := PlatformInitials(platform)
+	bg := PlatformColor(chat)
+	fg := "#ffffff"
+	svg := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><text x="128" y="148" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="700" fill="%s">%s</text></svg>`, bg, fg, html.EscapeString(initials))
+	return &MatrixMedia{
+		AssetID:   platformAvatarSyncValue(chat),
+		Content:   bytes.NewReader([]byte(svg)),
+		FileName:  strings.ToLower(strings.ReplaceAll(platform, " ", "-")) + "-bridge.svg",
+		MimeType:  "image/svg+xml",
+		SizeBytes: int64(len(svg)),
+	}
+}
+
+func platformAvatarSyncValue(chat Chat) string {
+	return "platform:" + PlatformDisplayName(chat)
 }
 
 func localAvatarMedia(rawPath string) (*MatrixMedia, bool, error) {
@@ -164,6 +418,13 @@ func localAvatarMedia(rawPath string) (*MatrixMedia, bool, error) {
 
 func portalAvatarSyncKey(chatID string) string {
 	return "portal_avatar:" + chatID
+}
+
+func portalAvatarSyncValue(chat Chat) string {
+	if chat.AvatarURL != "" {
+		return chat.AvatarURL
+	}
+	return platformAvatarSyncValue(chat)
 }
 
 func (s *Service) mirrorMessage(ctx context.Context, roomID string, msg Message) error {

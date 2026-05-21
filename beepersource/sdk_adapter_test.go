@@ -63,6 +63,58 @@ func TestDesktopAPIAdapterListChatsUsesConfiguredChatIDs(t *testing.T) {
 	}
 }
 
+func TestDesktopAPIAdapterListChatsAutoPagesAllChats(t *testing.T) {
+	var gotCursors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCursors = append(gotCursors, r.URL.Query().Get("cursor"))
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("cursor") == "" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{{
+					"id":         "!one:beeper",
+					"accountID":  "whatsapp",
+					"network":    "WhatsApp",
+					"title":      "One",
+					"type":       "group",
+					"isArchived": true,
+				}},
+				"hasMore":      true,
+				"oldestCursor": "page-2",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"items": []map[string]any{{
+				"id":        "!two:beeper",
+				"accountID": "signal",
+				"network":   "Signal",
+				"title":     "Two",
+				"type":      "group",
+			}},
+			"hasMore": false,
+		})
+	}))
+	defer server.Close()
+
+	adapter := NewDesktopAPIAdapter(Config{Beeper: BeeperConfig{BaseURL: server.URL}}, "test-token")
+	chats, err := adapter.ListChats(context.Background())
+	if err != nil {
+		t.Fatalf("ListChats returned error: %v", err)
+	}
+	if len(chats) != 2 {
+		t.Fatalf("expected two chats from both pages, got %d", len(chats))
+	}
+	if chats[0].Network != "WhatsApp" || chats[1].Network != "Signal" {
+		t.Fatalf("expected network names to be preserved, got %#v", chats)
+	}
+	if !chats[0].IsArchived {
+		t.Fatalf("expected archived flag to be preserved, got %#v", chats[0])
+	}
+	if strings.Join(gotCursors, ",") != ",page-2" {
+		t.Fatalf("expected cursor pagination, got %v", gotCursors)
+	}
+}
+
 func TestDesktopAPIAdapterSendMessageUsesBearerTokenAndReplyID(t *testing.T) {
 	var gotAuth string
 	var gotPath string

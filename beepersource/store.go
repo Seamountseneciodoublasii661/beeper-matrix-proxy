@@ -183,6 +183,22 @@ func (s *Store) UpsertPortal(ctx context.Context, chat Chat, matrixRoomID string
 	return err
 }
 
+func (s *Store) DeletePortal(ctx context.Context, chatID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM portal WHERE beeper_chat_id=?", chatID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM kv WHERE key IN (?, ?)", "portal_avatar:"+chatID, "portal_profile:"+chatID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) PortalCursor(ctx context.Context, chatID string) (string, error) {
 	var cursor sql.NullString
 	err := s.db.QueryRowContext(ctx, "SELECT last_cursor FROM portal WHERE beeper_chat_id=?", chatID).Scan(&cursor)
@@ -245,6 +261,50 @@ func (s *Store) UpsertMessageMapping(ctx context.Context, mapping MessageMapping
 			version=excluded.version,
 			deleted_at=excluded.deleted_at
 	`, mapping.BeeperMessageID, mapping.MatrixEventID, mapping.ChatID, mapping.Version, deletedAt)
+	return err
+}
+
+func (s *Store) MediaByAssetID(ctx context.Context, assetID string) (MatrixMedia, bool, error) {
+	if assetID == "" {
+		return MatrixMedia{}, false, nil
+	}
+	var media MatrixMedia
+	var contentHash sql.NullString
+	var matrixMXC sql.NullString
+	var mimeType sql.NullString
+	var size sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT content_hash, matrix_mxc, size, mime_type
+		FROM media_cache WHERE asset_id=?
+	`, assetID).Scan(&contentHash, &matrixMXC, &size, &mimeType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MatrixMedia{}, false, nil
+	}
+	if err != nil {
+		return MatrixMedia{}, false, err
+	}
+	media.AssetID = assetID
+	media.FileName = assetID
+	media.MimeType = mimeType.String
+	media.SizeBytes = size.Int64
+	media.CachedMXC = matrixMXC.String
+	media.ContentHash = contentHash.String
+	return media, matrixMXC.String != "", nil
+}
+
+func (s *Store) UpsertMediaCache(ctx context.Context, media MatrixMedia, matrixMXC string) error {
+	if media.AssetID == "" || matrixMXC == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO media_cache (asset_id, content_hash, matrix_mxc, size, mime_type)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(asset_id) DO UPDATE SET
+			content_hash=excluded.content_hash,
+			matrix_mxc=excluded.matrix_mxc,
+			size=excluded.size,
+			mime_type=excluded.mime_type
+	`, media.AssetID, media.ContentHash, matrixMXC, media.SizeBytes, media.MimeType)
 	return err
 }
 

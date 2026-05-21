@@ -94,6 +94,28 @@ func TestPendingMutationQueuePreservesUnmappedOperations(t *testing.T) {
 	}
 }
 
+func TestMediaCacheStoresReusableMXC(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	media := MatrixMedia{
+		AssetID:   "platform:WhatsApp",
+		MimeType:  "image/svg+xml",
+		SizeBytes: 123,
+	}
+	if err := store.UpsertMediaCache(ctx, media, "mxc://local/whatsapp"); err != nil {
+		t.Fatalf("UpsertMediaCache returned error: %v", err)
+	}
+	got, ok, err := store.MediaByAssetID(ctx, "platform:WhatsApp")
+	if err != nil {
+		t.Fatalf("MediaByAssetID returned error: %v", err)
+	}
+	if !ok || got.CachedMXC != "mxc://local/whatsapp" || got.MimeType != "image/svg+xml" || got.SizeBytes != 123 {
+		t.Fatalf("unexpected cached media ok=%v media=%#v", ok, got)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := OpenStore(context.Background(), filepath.Join(t.TempDir(), "state.db"))

@@ -40,6 +40,34 @@ func TestConfigCanDisableMatrixToBeeperWithoutRedeploy(t *testing.T) {
 	}
 }
 
+func TestConfigCanPreferPlatformAvatars(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS", "true")
+
+	cfg := DefaultConfig()
+
+	if !cfg.Matrix.PlatformAvatars {
+		t.Fatal("expected platform avatars to be enabled from env")
+	}
+}
+
+func TestConfigCanTunePortalWorkersAndArchivedChats(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_PORTAL_WORKERS", "8")
+	t.Setenv("BEEPER_MATRIX_PROXY_PORTAL_TIMEOUT_SECONDS", "25")
+	t.Setenv("BEEPER_MATRIX_PROXY_INCLUDE_ARCHIVED", "true")
+
+	cfg := DefaultConfig()
+
+	if cfg.Sync.PortalWorkers != 8 {
+		t.Fatalf("expected 8 portal workers, got %d", cfg.Sync.PortalWorkers)
+	}
+	if cfg.Sync.PortalTimeoutSeconds != 25 {
+		t.Fatalf("expected 25s portal timeout, got %d", cfg.Sync.PortalTimeoutSeconds)
+	}
+	if !cfg.Sync.IncludeArchived {
+		t.Fatal("expected archived chats to be included from env")
+	}
+}
+
 func TestAllowsBeeperChatUsesOptionalAllowlist(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.AllowsBeeperChat("!any:beeper") {
@@ -51,6 +79,17 @@ func TestAllowsBeeperChatUsesOptionalAllowlist(t *testing.T) {
 	}
 	if cfg.AllowsBeeperChat("!real-contact:beeper") {
 		t.Fatal("expected unlisted chat to be blocked")
+	}
+}
+
+func TestAllowsBeeperChatRecordSkipsArchivedByDefault(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.AllowsBeeperChatRecord(Chat{ID: "!archived:beeper", IsArchived: true}) {
+		t.Fatal("expected archived chats to be skipped by default")
+	}
+	cfg.Sync.IncludeArchived = true
+	if !cfg.AllowsBeeperChatRecord(Chat{ID: "!archived:beeper", IsArchived: true}) {
+		t.Fatal("expected archived chats to be allowed when configured")
 	}
 }
 
