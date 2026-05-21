@@ -56,6 +56,7 @@ Current `beeper-source` implementation status:
 | Matrix -> Beeper text/media core | Supported | Matrix `/sync` reader forwards user text and Matrix media from portal rooms to Beeper with stored sync tokens. |
 | Matrix -> Beeper edits/deletes/reactions | Supported | Live-tested in the Signal test group through Beeper Desktop API update/delete/reaction endpoints. |
 | Cinny visibility | Supported | Verified in Cinny v4.11.1: WhatsApp, Signal, and sh-vcvm test rooms appear as Matrix rooms. |
+| Beeper chat avatars -> Matrix room icons | Supported | Beeper `imgURL`/asset avatars are uploaded to Matrix and refreshed on existing portal rooms. |
 | Echo suppression | Supported | Persistent SQLite echo table maps Beeper echoes back to the original Matrix event, including changed echo versions after edits. |
 | Media policy | Partial | Matrix -> Beeper multipart upload works; oversized-media fallback exists. Full streaming for very large files is still future work. |
 | Deeper enrichment | Partial | Platform detection implemented; contact merging and analytics reports are later. |
@@ -71,6 +72,7 @@ Latest local E2E evidence from 2026-05-21:
 | Matrix/Cinny -> Beeper image | Signal | PNG uploaded as Beeper `IMAGE` with `image/png` metadata. |
 | Matrix/Cinny -> Beeper text + image | WhatsApp | Text `165911` and image `165912` arrived with filename, MIME type, and dimensions. |
 | Cinny room list | VCVM Synapse | Browser-verified rooms: `Beeper BotE2E:[signal] Test`, `Beeper BotE2E:[whatsapp] Test`, `Beeper BotE2E:[sh-vcvm-matrix] Test`, plus the non-bot test rooms. |
+| Beeper chat avatar -> Matrix room icon | WhatsApp | Live WhatsApp test room received `m.room.avatar` with an `mxc://` JPEG and Cinny showed `changed room avatar`. |
 
 ### Show Beeper Bridges In Cinny
 
@@ -219,7 +221,7 @@ Legend:
 | Voice messages | Partial | Both | Payload support | Voice metadata is supported; waveform generation needs more work. |
 | Polls | Partial | Matrix -> Beeper | Regression test + real Synapse poll lifecycle E2E | Poll starts are normalized with MSC1767 text fallbacks; Beeper UI round-trip still needs account-level testing. |
 | Backfill / history | Partial | Matrix -> Beeper | Code path | Backfill APIs exist; safe placeholder cleanup is intentionally separate. |
-| Avatars | Partial | Matrix -> Beeper | Real Synapse room-state E2E + code path | Downloadable room avatars work; stale media is improved by authenticated media and signed direct media. Direct origin fallback is disabled unless allowlisted. |
+| Avatars / room icons | Supported | Matrix -> Beeper, Beeper -> Matrix | Real Synapse room-state E2E + live Cinny/Beeper test group | Matrix room avatars bridge to Beeper; Beeper chat avatars now upload to Matrix portal rooms and refresh existing rooms when `imgURL` changes. Signal test chat currently has no source avatar. |
 | Typing notifications | Supported | Both | Regression test + real Synapse ephemeral E2E | Beeper typing is sent to remote Matrix; remote Matrix typing is queued back to Beeper. |
 | Read receipts | Supported | Both | Real Synapse ephemeral E2E | Exact Beeper receipts are sent to remote Matrix; remote Matrix receipts are queued to Beeper. |
 | Native audio/video calls | Not supported | Both | Intentionally hidden | Custom bridges should emit call notices/links instead of fake native call UI. |

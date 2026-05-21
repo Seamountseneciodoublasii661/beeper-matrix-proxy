@@ -43,10 +43,13 @@ func NewMatrixClientSink(cfg Config, store *Store, accessToken string) (*MatrixC
 	return &MatrixClientSink{cfg: cfg, store: store, client: cli}, nil
 }
 
-func (m *MatrixClientSink) EnsurePortal(ctx context.Context, chat Chat) (string, error) {
+func (m *MatrixClientSink) EnsurePortal(ctx context.Context, chat Chat, avatar *MatrixMedia) (string, error) {
 	if roomID, ok, err := m.store.PortalRoomID(ctx, chat.ID); err != nil {
 		return "", err
 	} else if ok {
+		if err := m.updateRoomAvatar(ctx, roomID, avatar); err != nil {
+			return "", err
+		}
 		return roomID, nil
 	}
 
@@ -63,7 +66,21 @@ func (m *MatrixClientSink) EnsurePortal(ctx context.Context, chat Chat) (string,
 	if m.cfg.Matrix.InviteUserID != "" {
 		req.Invite = []id.UserID{id.UserID(m.cfg.Matrix.InviteUserID)}
 	}
-	if avatarURL, info, err := m.uploadLocalAvatar(ctx, chat.AvatarURL); err == nil && avatarURL != "" {
+	if avatar != nil {
+		avatarURL, info, err := m.uploadAvatar(ctx, avatar)
+		if err != nil {
+			return "", err
+		}
+		if avatarURL != "" {
+			req.InitialState = append(req.InitialState, &event.Event{
+				Type: event.StateRoomAvatar,
+				Content: event.Content{Parsed: &event.RoomAvatarEventContent{
+					URL:  avatarURL,
+					Info: info,
+				}},
+			})
+		}
+	} else if avatarURL, info, err := m.uploadLocalAvatar(ctx, chat.AvatarURL); err == nil && avatarURL != "" {
 		req.InitialState = append(req.InitialState, &event.Event{
 			Type: event.StateRoomAvatar,
 			Content: event.Content{Parsed: &event.RoomAvatarEventContent{
@@ -77,6 +94,37 @@ func (m *MatrixClientSink) EnsurePortal(ctx context.Context, chat Chat) (string,
 		return "", err
 	}
 	return resp.RoomID.String(), nil
+}
+
+func (m *MatrixClientSink) updateRoomAvatar(ctx context.Context, roomID string, avatar *MatrixMedia) error {
+	avatarURL, info, err := m.uploadAvatar(ctx, avatar)
+	if err != nil || avatarURL == "" {
+		return err
+	}
+	_, err = m.client.SendStateEvent(ctx, id.RoomID(roomID), event.StateRoomAvatar, "", &event.RoomAvatarEventContent{
+		URL:  avatarURL,
+		Info: info,
+	})
+	return err
+}
+
+func (m *MatrixClientSink) uploadAvatar(ctx context.Context, avatar *MatrixMedia) (id.ContentURIString, *event.FileInfo, error) {
+	if avatar == nil || avatar.Content == nil {
+		return "", nil, nil
+	}
+	upload, err := m.client.UploadMedia(ctx, mautrix.ReqUploadMedia{
+		Content:       avatar.Content,
+		ContentLength: avatar.SizeBytes,
+		ContentType:   avatar.MimeType,
+		FileName:      avatar.FileName,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return upload.ContentURI.CUString(), &event.FileInfo{
+		MimeType: avatar.MimeType,
+		Size:     int(avatar.SizeBytes),
+	}, nil
 }
 
 func (m *MatrixClientSink) EnsurePuppet(ctx context.Context, sender Sender) (string, error) {

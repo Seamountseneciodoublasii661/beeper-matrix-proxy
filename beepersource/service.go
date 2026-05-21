@@ -4,6 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -22,7 +29,7 @@ type BeeperAPI interface {
 }
 
 type MatrixSink interface {
-	EnsurePortal(context.Context, Chat) (string, error)
+	EnsurePortal(context.Context, Chat, *MatrixMedia) (string, error)
 	EnsurePuppet(context.Context, Sender) (string, error)
 	SendMessage(context.Context, MatrixOutbound) (string, error)
 }
@@ -50,9 +57,21 @@ func (s *Service) ReconcileOnce(ctx context.Context) error {
 		if !s.cfg.AllowsBeeperChat(chat.ID) {
 			continue
 		}
-		roomID, err := s.matrix.EnsurePortal(ctx, chat)
+		avatar, err := s.portalAvatar(ctx, chat)
+		if err != nil {
+			return fmt.Errorf("prepare Matrix portal avatar for %s: %w", chat.ID, err)
+		}
+		roomID, err := s.matrix.EnsurePortal(ctx, chat, avatar)
+		if avatar != nil && avatar.Close != nil {
+			_ = avatar.Close()
+		}
 		if err != nil {
 			return fmt.Errorf("ensure Matrix portal for %s: %w", chat.ID, err)
+		}
+		if avatar != nil {
+			if err := s.store.SetValue(ctx, portalAvatarSyncKey(chat.ID), chat.AvatarURL); err != nil {
+				return err
+			}
 		}
 		cursor, err := s.store.PortalCursor(ctx, chat.ID)
 		if err != nil {
@@ -72,6 +91,79 @@ func (s *Service) ReconcileOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) portalAvatar(ctx context.Context, chat Chat) (*MatrixMedia, error) {
+	if chat.AvatarURL == "" {
+		return nil, nil
+	}
+	lastAvatar, err := s.store.GetValue(ctx, portalAvatarSyncKey(chat.ID))
+	if err != nil || lastAvatar == chat.AvatarURL {
+		return nil, err
+	}
+	if avatar, ok, err := localAvatarMedia(chat.AvatarURL); ok || err != nil {
+		return avatar, err
+	}
+	asset, err := s.api.DownloadAsset(ctx, chat.AvatarURL)
+	if err != nil {
+		return nil, err
+	}
+	fileName := firstNonEmpty(asset.FileName, "beeper-avatar")
+	mimeType := firstNonEmpty(asset.MimeType, "application/octet-stream")
+	return &MatrixMedia{
+		Content:   asset.Content,
+		Close:     asset.Content.Close,
+		FileName:  fileName,
+		MimeType:  mimeType,
+		SizeBytes: asset.SizeBytes,
+	}, nil
+}
+
+func localAvatarMedia(rawPath string) (*MatrixMedia, bool, error) {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return nil, false, nil
+	}
+	if strings.HasPrefix(path, "file://") {
+		parsed, err := url.Parse(path)
+		if err != nil {
+			return nil, true, err
+		}
+		path = parsed.Path
+	}
+	if strings.Contains(path, "://") {
+		return nil, false, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, true, err
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, true, err
+	}
+	mimeType := mime.TypeByExtension(filepath.Ext(path))
+	if mimeType == "" {
+		head := make([]byte, 512)
+		n, _ := file.Read(head)
+		mimeType = http.DetectContentType(head[:n])
+		if _, err = file.Seek(0, io.SeekStart); err != nil {
+			_ = file.Close()
+			return nil, true, err
+		}
+	}
+	return &MatrixMedia{
+		Content:   file,
+		Close:     file.Close,
+		FileName:  filepath.Base(path),
+		MimeType:  mimeType,
+		SizeBytes: stat.Size(),
+	}, true, nil
+}
+
+func portalAvatarSyncKey(chatID string) string {
+	return "portal_avatar:" + chatID
 }
 
 func (s *Service) mirrorMessage(ctx context.Context, roomID string, msg Message) error {

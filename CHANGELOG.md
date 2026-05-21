@@ -14,6 +14,9 @@ public `main` branch.
 - Matrix client sink for `beeper-source` with room creation, deterministic
   transaction IDs, optional invite target, sender-prefix fallback, and Beeper
   per-message profile metadata.
+- Beeper chat avatar mirroring into Matrix portal room icons, including local
+  Beeper media paths, `file://` paths, remote asset downloads, and refreshes for
+  already-created rooms.
 - Matrix `/sync` source for bidirectional `beeper-source` text messages from
   Cinny/Matrix portal rooms back to Beeper.
 - Matrix `/sync` source support for Matrix -> Beeper media, edits, redactions,
@@ -103,6 +106,8 @@ public `main` branch.
 - Live Matrix/Cinny -> Beeper WhatsApp test group E2E for text and image.
 - Browser-verified Cinny v4.11.1 room list with the Beeper BotE2E Signal,
   WhatsApp, and sh-vcvm Matrix rooms visible.
+- Live WhatsApp test group avatar E2E: Beeper local avatar media was uploaded to
+  Matrix as `m.room.avatar` and Cinny showed the room avatar state change.
 
 ## 2026-05-20
 

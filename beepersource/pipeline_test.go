@@ -133,6 +133,66 @@ func TestReconcileMirrorsImageAttachmentAsMatrixMedia(t *testing.T) {
 	}
 }
 
+func TestReconcileDownloadsChatAvatarForNewPortal(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	api := &fakeBeeperAPI{
+		chats: []Chat{{
+			ID:        "!chat:beeper",
+			AccountID: "whatsapp",
+			Name:      "Avatar Test",
+			AvatarURL: "localmxc://avatar",
+		}},
+		messages: map[string][]Message{"!chat:beeper": nil},
+		assets:   map[string]string{"localmxc://avatar": "avatar-bytes"},
+	}
+	matrix := &fakeMatrixSink{}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+
+	if err := svc.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce returned error: %v", err)
+	}
+	if len(matrix.avatars) != 1 {
+		t.Fatalf("expected one portal avatar, got %d", len(matrix.avatars))
+	}
+	body, err := io.ReadAll(matrix.avatars[0].Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "avatar-bytes" {
+		t.Fatalf("unexpected avatar body %q", string(body))
+	}
+}
+
+func TestReconcileRefreshesExistingPortalAvatarWhenChanged(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	if err := store.UpsertPortal(ctx, Chat{ID: "!chat:beeper"}, "!matrix-!chat:beeper", ""); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{
+		chats: []Chat{{
+			ID:        "!chat:beeper",
+			AccountID: "signal",
+			Name:      "Existing Avatar Test",
+			AvatarURL: "localmxc://avatar-v2",
+		}},
+		messages: map[string][]Message{"!chat:beeper": nil},
+		assets:   map[string]string{"localmxc://avatar-v2": "avatar-v2"},
+	}
+	matrix := &fakeMatrixSink{}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+
+	if err := svc.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce returned error: %v", err)
+	}
+	if len(matrix.avatars) != 1 {
+		t.Fatalf("expected existing portal avatar refresh, got %d avatars", len(matrix.avatars))
+	}
+}
+
 func TestReconcileFallsBackToNoticeWhenMatrixMediaUploadFails(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -362,9 +422,13 @@ func (f *fakeBeeperAPI) RemoveReaction(ctx context.Context, chatID, messageID, r
 type fakeMatrixSink struct {
 	events    []MatrixOutbound
 	failMedia bool
+	avatars   []*MatrixMedia
 }
 
-func (f *fakeMatrixSink) EnsurePortal(ctx context.Context, chat Chat) (string, error) {
+func (f *fakeMatrixSink) EnsurePortal(ctx context.Context, chat Chat, avatar *MatrixMedia) (string, error) {
+	if avatar != nil {
+		f.avatars = append(f.avatars, avatar)
+	}
 	return "!matrix-" + chat.ID, nil
 }
 
