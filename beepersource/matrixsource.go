@@ -54,22 +54,10 @@ func (m *MatrixClientSource) SyncOnce(ctx context.Context, service *Service) err
 			continue
 		}
 		for _, ev := range room.Timeline.Events {
-			if ev.Type != "m.room.message" || ev.Sender == m.cfg.Matrix.UserID || ev.EventID == "" {
+			if ev.Sender == m.cfg.Matrix.UserID || ev.EventID == "" {
 				continue
 			}
-			if ev.Content.MsgType != "m.text" && ev.Content.MsgType != "m.notice" {
-				continue
-			}
-			body := strings.TrimSpace(ev.Content.Body)
-			if body == "" {
-				continue
-			}
-			if err := service.HandleMatrixMessage(ctx, MatrixInbound{
-				ChatID:        chatID,
-				MatrixEventID: ev.EventID,
-				Body:          body,
-				HTML:          ev.Content.FormattedBody,
-			}); err != nil {
+			if err := m.handleEvent(ctx, service, chatID, ev); err != nil {
 				return err
 			}
 		}
@@ -78,6 +66,128 @@ func (m *MatrixClientSource) SyncOnce(ctx context.Context, service *Service) err
 		return m.store.SetValue(ctx, matrixSyncSinceKey, resp.NextBatch)
 	}
 	return nil
+}
+
+func (m *MatrixClientSource) handleEvent(ctx context.Context, service *Service, chatID string, ev matrixSyncEvent) error {
+	switch ev.Type {
+	case "m.room.message":
+		if target := ev.Content.RelatesTo.EventID; ev.Content.RelatesTo.RelType == "m.replace" && target != "" {
+			body := strings.TrimSpace(firstNonEmpty(ev.Content.NewContent.Body, strings.TrimPrefix(ev.Content.Body, "* ")))
+			if body == "" {
+				return nil
+			}
+			return service.HandleMatrixEdit(ctx, chatID, target, body)
+		}
+		if ev.Content.MsgType != "m.text" && ev.Content.MsgType != "m.notice" && ev.Content.URL == "" {
+			return nil
+		}
+		body := strings.TrimSpace(ev.Content.Body)
+		if body == "" {
+			return nil
+		}
+		inbound := MatrixInbound{
+			ChatID:        chatID,
+			MatrixEventID: ev.EventID,
+			Body:          body,
+			HTML:          ev.Content.FormattedBody,
+		}
+		if ev.Content.URL != "" {
+			attachment, err := m.downloadAttachment(ctx, ev)
+			if err != nil {
+				return err
+			}
+			inbound.Attachment = attachment
+		}
+		return service.HandleMatrixMessage(ctx, inbound)
+	case "m.reaction":
+		rel := ev.Content.RelatesTo
+		if rel.RelType != "m.annotation" || rel.EventID == "" || rel.Key == "" {
+			return nil
+		}
+		return service.HandleMatrixReaction(ctx, chatID, ev.EventID, rel.EventID, rel.Key)
+	case "m.room.redaction":
+		target := ev.Redacts
+		if target == "" {
+			target = ev.Content.Redacts
+		}
+		if target == "" {
+			return nil
+		}
+		return service.HandleMatrixRedaction(ctx, chatID, target)
+	default:
+		return nil
+	}
+}
+
+func (m *MatrixClientSource) downloadAttachment(ctx context.Context, ev matrixSyncEvent) (*OutboundAttachment, error) {
+	downloadURL, err := m.matrixMediaDownloadURL(ev.Content.URL)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+m.token)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("Matrix media download returned HTTP %d", resp.StatusCode)
+	}
+	fileName := firstNonEmpty(ev.Content.FileName, ev.Content.Body, "matrix-attachment")
+	mimeType := firstNonEmpty(ev.Content.Info.MimeType, resp.Header.Get("Content-Type"), "application/octet-stream")
+	return &OutboundAttachment{
+		Content:    resp.Body,
+		FileName:   fileName,
+		MimeType:   mimeType,
+		SizeBytes:  firstNonZeroInt64(int64(ev.Content.Info.Size), resp.ContentLength),
+		Width:      ev.Content.Info.Width,
+		Height:     ev.Content.Info.Height,
+		DurationMS: ev.Content.Info.Duration,
+		Type:       beeperAttachmentType(ev.Content.MsgType, mimeType),
+	}, nil
+}
+
+func (m *MatrixClientSource) matrixMediaDownloadURL(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "mxc" || parsed.Host == "" || strings.Trim(parsed.Path, "/") == "" {
+		return "", fmt.Errorf("unsupported Matrix media URL %q", raw)
+	}
+	base := strings.TrimRight(m.cfg.Matrix.HomeserverURL, "/")
+	return base + "/_matrix/client/v1/media/download/" + url.PathEscape(parsed.Host) + "/" + url.PathEscape(strings.Trim(parsed.Path, "/")), nil
+}
+
+func beeperAttachmentType(msgType string, mimeType string) string {
+	switch msgType {
+	case "m.image":
+		if mimeType == "image/gif" {
+			return "gif"
+		}
+		return "image"
+	case "m.video":
+		return "video"
+	case "m.audio":
+		return "audio"
+	case "m.sticker":
+		return "sticker"
+	default:
+		return "file"
+	}
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (m *MatrixClientSource) sync(ctx context.Context, since string) (*matrixSyncResponse, error) {
@@ -127,10 +237,29 @@ type matrixSyncEvent struct {
 	Type    string `json:"type"`
 	EventID string `json:"event_id"`
 	Sender  string `json:"sender"`
+	Redacts string `json:"redacts"`
 	Content struct {
 		MsgType       string `json:"msgtype"`
 		Body          string `json:"body"`
 		Format        string `json:"format"`
 		FormattedBody string `json:"formatted_body"`
+		FileName      string `json:"filename"`
+		URL           string `json:"url"`
+		Redacts       string `json:"redacts"`
+		Info          struct {
+			MimeType string `json:"mimetype"`
+			Size     int    `json:"size"`
+			Width    int    `json:"w"`
+			Height   int    `json:"h"`
+			Duration int    `json:"duration"`
+		} `json:"info"`
+		NewContent struct {
+			Body string `json:"body"`
+		} `json:"m.new_content"`
+		RelatesTo struct {
+			RelType string `json:"rel_type"`
+			EventID string `json:"event_id"`
+			Key     string `json:"key"`
+		} `json:"m.relates_to"`
 	} `json:"content"`
 }

@@ -15,6 +15,10 @@ type BeeperAPI interface {
 	ListMessages(ctx context.Context, chatID string, afterCursor string, limit int) ([]Message, string, error)
 	DownloadAsset(ctx context.Context, assetURL string) (*AssetStream, error)
 	SendMessage(ctx context.Context, outbound BeeperOutbound) (string, error)
+	UpdateMessage(ctx context.Context, chatID, messageID, text string) error
+	DeleteMessage(ctx context.Context, chatID, messageID string, forEveryone bool) error
+	AddReaction(ctx context.Context, chatID, messageID, reactionKey, txnID string) error
+	RemoveReaction(ctx context.Context, chatID, messageID, reactionKey string) error
 }
 
 type MatrixSink interface {
@@ -76,8 +80,13 @@ func (s *Service) mirrorMessage(ctx context.Context, roomID string, msg Message)
 		return err
 	}
 	version := MessageVersion(msg)
-	if ok && existing.Version == version {
-		return nil
+	if ok {
+		if existing.Version == version {
+			return nil
+		}
+		existing.Version = version
+		existing.DeletedAt = nil
+		return s.store.UpsertMessageMapping(ctx, existing)
 	}
 	body := messageBody(msg)
 	if matrixEventID, ok, err := s.store.ConsumeOutboundEcho(ctx, msg.ChatID, body); err != nil {
@@ -184,11 +193,46 @@ func (s *Service) HandleMatrixMessage(ctx context.Context, inbound MatrixInbound
 		HTML:        inbound.HTML,
 		ReplyToID:   inbound.ReplyToEvent,
 		ClientTxnID: txnID,
+		Attachment:  inbound.Attachment,
 	})
 	if err != nil {
 		return err
 	}
 	return s.store.RememberOutboundEcho(ctx, inbound.ChatID, inbound.Body, inbound.MatrixEventID, 10*time.Minute)
+}
+
+func (s *Service) HandleMatrixEdit(ctx context.Context, chatID, matrixTargetEventID, text string) error {
+	mapping, ok, err := s.store.MessageByMatrixEventID(ctx, matrixTargetEventID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	return s.api.UpdateMessage(ctx, chatID, mapping.BeeperMessageID, text)
+}
+
+func (s *Service) HandleMatrixRedaction(ctx context.Context, chatID, matrixTargetEventID string) error {
+	mapping, ok, err := s.store.MessageByMatrixEventID(ctx, matrixTargetEventID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	return s.api.DeleteMessage(ctx, chatID, mapping.BeeperMessageID, true)
+}
+
+func (s *Service) HandleMatrixReaction(ctx context.Context, chatID, matrixEventID, matrixTargetEventID, reactionKey string) error {
+	mapping, ok, err := s.store.MessageByMatrixEventID(ctx, matrixTargetEventID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	txnID := DeterministicTxnID(chatID, matrixEventID, MutationReaction, reactionKey)
+	return s.api.AddReaction(ctx, chatID, mapping.BeeperMessageID, reactionKey, txnID)
 }
 
 func messageBody(msg Message) string {

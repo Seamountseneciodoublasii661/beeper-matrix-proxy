@@ -115,6 +115,7 @@ type MatrixInbound struct {
 	HTML          string
 	ReplyToEvent  string
 	Timestamp     time.Time
+	Attachment    *OutboundAttachment
 }
 
 type BeeperOutbound struct {
@@ -123,6 +124,18 @@ type BeeperOutbound struct {
 	HTML        string
 	ReplyToID   string
 	ClientTxnID string
+	Attachment  *OutboundAttachment
+}
+
+type OutboundAttachment struct {
+	Content    io.ReadCloser
+	FileName   string
+	MimeType   string
+	SizeBytes  int64
+	Width      int
+	Height     int
+	DurationMS int
+	Type       string
 }
 
 type MessageMapping struct {

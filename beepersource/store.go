@@ -268,6 +268,26 @@ func (s *Store) MessageByBeeperID(ctx context.Context, beeperMessageID string) (
 	return mapping, true, nil
 }
 
+func (s *Store) MessageByMatrixEventID(ctx context.Context, matrixEventID string) (MessageMapping, bool, error) {
+	var mapping MessageMapping
+	var deletedAt sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT beeper_message_id, matrix_event_id, chat_id, version, deleted_at
+		FROM message_mapping WHERE matrix_event_id=?
+	`, matrixEventID).Scan(&mapping.BeeperMessageID, &mapping.MatrixEventID, &mapping.ChatID, &mapping.Version, &deletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MessageMapping{}, false, nil
+	}
+	if err != nil {
+		return MessageMapping{}, false, err
+	}
+	if deletedAt.Valid {
+		t := time.Unix(deletedAt.Int64, 0).UTC()
+		mapping.DeletedAt = &t
+	}
+	return mapping, true, nil
+}
+
 func (s *Store) EnqueuePendingMutation(ctx context.Context, mutation PendingMutation) (int64, error) {
 	createdAt := mutation.CreatedAt
 	if createdAt.IsZero() {

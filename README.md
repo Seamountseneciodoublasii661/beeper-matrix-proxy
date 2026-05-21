@@ -4,7 +4,6 @@
 stock Beeper client and a bridgev2 custom bridge.**
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![CI](https://github.com/Martin-Hausleitner/beeper-matrix-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Martin-Hausleitner/beeper-matrix-proxy/actions/workflows/ci.yml)
 [![Matrix](https://img.shields.io/badge/Matrix-bridge-black?logo=matrix&logoColor=white)](https://matrix.org/)
 [![Beeper](https://img.shields.io/badge/Beeper-bridgev2-35C759)](https://developers.beeper.com/bridges/self-hosting)
 [![Status](https://img.shields.io/badge/status-experimental-orange)](#current-status)
@@ -54,11 +53,24 @@ Current `beeper-source` implementation status:
 | SQLite WAL state | Supported | Creates `portal`, `puppet`, `message_mapping`, `reaction_mapping`, `pending_mutation`, `media_cache`, and `queue`. |
 | Deterministic txn IDs | Supported | Stable hash from chat/message/mutation/version. |
 | Beeper -> Matrix text mirror core | Supported | `cmd/beeper-source` can create Matrix rooms and mirror Beeper text messages into them. |
-| Matrix -> Beeper text core | Supported | Matrix `/sync` reader forwards user text from portal rooms to Beeper with stored sync tokens. |
+| Matrix -> Beeper text/media core | Supported | Matrix `/sync` reader forwards user text and Matrix media from portal rooms to Beeper with stored sync tokens. |
+| Matrix -> Beeper edits/deletes/reactions | Supported | Live-tested in the Signal test group through Beeper Desktop API update/delete/reaction endpoints. |
 | Cinny visibility | Supported | Verified in Cinny v4.11.1: WhatsApp, Signal, and sh-vcvm test rooms appear as Matrix rooms. |
-| Echo suppression | Supported | Persistent SQLite echo table maps Beeper echoes back to the original Matrix event. |
-| Media policy | Partial | Oversized-media fallback exists; streaming asset copy/upload is next work. |
+| Echo suppression | Supported | Persistent SQLite echo table maps Beeper echoes back to the original Matrix event, including changed echo versions after edits. |
+| Media policy | Partial | Matrix -> Beeper multipart upload works; oversized-media fallback exists. Full streaming for very large files is still future work. |
 | Deeper enrichment | Partial | Platform detection implemented; contact merging and analytics reports are later. |
+
+Latest local E2E evidence from 2026-05-21:
+
+| Path | Test group | Result |
+|---|---|---|
+| Matrix/Cinny -> Beeper text | Signal | Message `165648` created from Matrix event `$6B7BFH1w4X_kgCuD9_4T5Ad9TAvAoLmuHWQkSsbBKZA`. |
+| Matrix/Cinny -> Beeper edit | Signal | Same message updated to `edited-ok` and exposed `editedTimestamp`. |
+| Matrix/Cinny -> Beeper reaction | Signal | Matrix reaction became Beeper reaction `🎉`. |
+| Matrix/Cinny -> Beeper delete | Signal | Same message became `isDeleted: true` through Beeper API. |
+| Matrix/Cinny -> Beeper image | Signal | PNG uploaded as Beeper `IMAGE` with `image/png` metadata. |
+| Matrix/Cinny -> Beeper text + image | WhatsApp | Text `165911` and image `165912` arrived with filename, MIME type, and dimensions. |
+| Cinny room list | VCVM Synapse | Browser-verified rooms: `Beeper BotE2E:[signal] Test`, `Beeper BotE2E:[whatsapp] Test`, `Beeper BotE2E:[sh-vcvm-matrix] Test`, plus the non-bot test rooms. |
 
 ### Show Beeper Bridges In Cinny
 
@@ -107,7 +119,7 @@ Docker Synapse E2E:
 | Poll/raw event clone allocations | ~60 allocs/run | 12 allocs/op | ~80% fewer |
 | Default remote `/sync` burst window | 50 timeline events | 100 timeline events | 2x larger |
 | Local Synapse burst E2E | 40/40 messages | 100/100 messages | larger verified burst |
-| `beeper-source` 500-text-message reconcile benchmark | n/a | ~25.0 ms/op, 1.44 MB/op | tracked hot path |
+| `beeper-source` 500-text-message reconcile benchmark | ~25.0 ms/op, 1.44 MB/op | ~23.5 ms/op, 1.44 MB/op | ~5.6% faster in latest local run |
 
 The current 100-message Synapse burst test delivered all events with roughly
 `1.88s` send time and `15ms` sync pickup time in the local harness. A mixed
@@ -197,9 +209,9 @@ Legend:
 | Room name/topic/avatar | Supported | Matrix -> Beeper | Real Synapse E2E | Uses Matrix room state during chat sync. |
 | Replies | Supported | Both | Regression test + real Synapse relation E2E | Beeper-local event IDs are rewritten to remote Matrix IDs. |
 | Threads | Partial | Both | Regression test + real Synapse relation E2E | Thread root IDs are rewritten; deeper Beeper UI behavior needs more testing. |
-| Reactions | Partial | Both | Regression test + real Synapse modality E2E | Add/remove paths persist remote metadata across restarts; broader Matrix client compatibility still needs live matrix testing. |
-| Edits | Supported | Both | Regression test + live smoke test | Legacy Matrix edit fallback prefixes are stripped for Beeper rendering. |
-| Redactions / deletes | Partial | Both | Real Synapse modality E2E | Live delete paths exist; historical cleanup requires explicit redaction tooling. |
+| Reactions | Supported | Both | Regression test + live Signal test group E2E | Matrix reactions are mapped through Beeper's reaction API; restart-safe remove paths are covered by tests. |
+| Edits | Supported | Both | Regression test + live Signal test group E2E | Legacy Matrix edit fallback prefixes are stripped for Beeper rendering. |
+| Redactions / deletes | Supported | Both | Regression test + live Signal test group E2E | Matrix redactions map to Beeper delete; historical cleanup still requires explicit redaction tooling. |
 | Images | Supported | Both | Regression test + real Synapse media E2E | Media is reuploaded by default; direct media is available when bridgev2 direct media is enabled. |
 | Files | Supported | Both | Regression test + real Synapse media E2E | Same media path as images; upload size and direct download size are capped. |
 | Videos | Partial | Both | Code path | Works as media; large files depend on real proxy and homeserver limits. |
@@ -212,7 +224,7 @@ Legend:
 | Read receipts | Supported | Both | Real Synapse ephemeral E2E | Exact Beeper receipts are sent to remote Matrix; remote Matrix receipts are queued to Beeper. |
 | Native audio/video calls | Not supported | Both | Intentionally hidden | Custom bridges should emit call notices/links instead of fake native call UI. |
 | End-to-end encryption | Planned | Both | Not implemented as a product feature | Needs a separate device, key, and trust model design. |
-| Beeper source rooms | Partial | Both for text, Beeper -> Matrix for media | Live Cinny/Beeper test groups + unit tests | New subsystem creates Matrix rooms from Beeper chats; true appservice ghost senders and Matrix -> Beeper media are next. |
+| Beeper source rooms | Partial | Bidirectional text, media, edits, deletes, reactions | Live Cinny/Beeper test groups + unit tests | New subsystem creates Matrix rooms from Beeper chats; true appservice ghost senders, full WebSocket daemon mode, polls, calls, and large-file streaming are next. |
 
 ## Can This Reuse Existing Beeper Bridges?
 
@@ -330,7 +342,9 @@ homeserver username/password.
 
 ### Quality Gates
 
-The public GitHub CI runs the same core checks expected locally:
+All validation is expected to run locally in the VCVM. This repository currently
+does not ship GitHub Actions workflows, so pushes do not trigger GitHub-hosted
+runs.
 
 ```bash
 go test ./...

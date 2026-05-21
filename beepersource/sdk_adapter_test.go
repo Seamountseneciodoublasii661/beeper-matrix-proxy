@@ -3,6 +3,7 @@ package beepersource
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -101,6 +102,74 @@ func TestDesktopAPIAdapterSendMessageUsesBearerTokenAndReplyID(t *testing.T) {
 	}
 	if body["text"] != "hello" || body["replyToMessageID"] != "$reply" {
 		t.Fatalf("unexpected request body %#v", body)
+	}
+}
+
+func TestDesktopAPIAdapterSendMessageUploadsAttachmentWithMetadata(t *testing.T) {
+	var uploadFileName string
+	var uploadContentType string
+	var sendBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/assets/upload":
+			reader, err := r.MultipartReader()
+			if err != nil {
+				t.Fatalf("multipart reader: %v", err)
+			}
+			for {
+				part, err := reader.NextPart()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("next part: %v", err)
+				}
+				if part.FormName() == "file" {
+					uploadFileName = part.FileName()
+					uploadContentType = part.Header.Get("Content-Type")
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"uploadID": "upload-1",
+				"fileName": "cinny.png",
+				"mimeType": "image/png",
+				"width":    1,
+				"height":   1,
+			})
+		case "/v1/chats/!chat:beeper/messages":
+			if err := json.NewDecoder(r.Body).Decode(&sendBody); err != nil {
+				t.Fatalf("decode send body: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"chatID": "!chat:beeper", "pendingMessageID": "$pending"})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adapter := NewDesktopAPIAdapter(Config{Beeper: BeeperConfig{BaseURL: server.URL}}, "test-token")
+	_, err := adapter.SendMessage(context.Background(), BeeperOutbound{
+		ChatID: "!chat:beeper",
+		Text:   "caption",
+		Attachment: &OutboundAttachment{
+			Content:  io.NopCloser(strings.NewReader("png")),
+			FileName: "cinny.png",
+			MimeType: "image/png",
+			Type:     "image",
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+	if uploadFileName != "cinny.png" || uploadContentType != "image/png" {
+		t.Fatalf("unexpected upload metadata filename=%q content-type=%q", uploadFileName, uploadContentType)
+	}
+	attachment, ok := sendBody["attachment"].(map[string]any)
+	if !ok || attachment["uploadID"] != "upload-1" || attachment["type"] != "image" {
+		t.Fatalf("unexpected send attachment %#v", sendBody["attachment"])
 	}
 }
 

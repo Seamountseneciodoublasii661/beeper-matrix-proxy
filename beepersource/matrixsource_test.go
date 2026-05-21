@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +66,133 @@ func TestMatrixSyncForwardsCinnyMessageToBeeper(t *testing.T) {
 	}
 	if token != "sync-2" {
 		t.Fatalf("expected sync token to be stored, got %q", token)
+	}
+}
+
+func TestMatrixSyncForwardsMediaToBeeper(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	if err := store.UpsertPortal(ctx, Chat{ID: "!chat:beeper"}, "!room:local", ""); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{}
+	svc := NewService(DefaultConfig(), store, api, &fakeMatrixSink{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/sync":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"next_batch": "sync-media",
+				"rooms": {"join": {"!room:local": {"timeline": {"events": [{
+					"type": "m.room.message",
+					"event_id": "$media:local",
+					"sender": "@cinny:local",
+					"content": {
+						"msgtype": "m.image",
+						"body": "cinny.png",
+						"url": "mxc://local.test/media123",
+						"info": {"mimetype": "image/png", "size": 7, "w": 2, "h": 3}
+					}
+				}]}}}}
+			}`))
+		case "/_matrix/client/v1/media/download/local.test/media123":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("pngdata"))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	cfg := DefaultConfig()
+	cfg.Matrix.HomeserverURL = server.URL
+	cfg.Matrix.UserID = "@bridge:local"
+	cfg.Matrix.InsecureSkipTLS = true
+	source := NewMatrixClientSource(cfg, store, "matrix-token")
+
+	if err := source.SyncOnce(ctx, svc); err != nil {
+		t.Fatalf("SyncOnce returned error: %v", err)
+	}
+	if len(api.sent) != 1 {
+		t.Fatalf("expected one Beeper send, got %d", len(api.sent))
+	}
+	if api.sent[0].Attachment == nil {
+		t.Fatalf("expected outbound attachment, got %#v", api.sent[0])
+	}
+	if api.sent[0].Attachment.FileName != "cinny.png" || api.sent[0].Attachment.MimeType != "image/png" {
+		t.Fatalf("unexpected attachment: %#v", api.sent[0].Attachment)
+	}
+}
+
+func TestMatrixSyncForwardsEditDeleteAndReactionToBeeper(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	if err := store.UpsertPortal(ctx, Chat{ID: "!chat:beeper"}, "!room:local", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessageMapping(ctx, MessageMapping{
+		BeeperMessageID: "$beeper-target",
+		MatrixEventID:   "$matrix-target:local",
+		ChatID:          "!chat:beeper",
+		Version:         "1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{}
+	svc := NewService(DefaultConfig(), store, api, &fakeMatrixSink{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"next_batch": "sync-relations",
+			"rooms": {"join": {"!room:local": {"timeline": {"events": [
+				{
+					"type": "m.room.message",
+					"event_id": "$edit:local",
+					"sender": "@cinny:local",
+					"content": {
+						"msgtype": "m.text",
+						"body": "* edited body",
+						"m.new_content": {"msgtype": "m.text", "body": "edited body"},
+						"m.relates_to": {"rel_type": "m.replace", "event_id": "$matrix-target:local"}
+					}
+				},
+				{
+					"type": "m.reaction",
+					"event_id": "$reaction:local",
+					"sender": "@cinny:local",
+					"content": {
+						"m.relates_to": {"rel_type": "m.annotation", "event_id": "$matrix-target:local", "key": "✅"}
+					}
+				},
+				{
+					"type": "m.room.redaction",
+					"event_id": "$redaction:local",
+					"sender": "@cinny:local",
+					"redacts": "$matrix-target:local",
+					"content": {}
+				}
+			]}}}}
+		}`))
+	}))
+	defer server.Close()
+	cfg := DefaultConfig()
+	cfg.Matrix.HomeserverURL = server.URL
+	cfg.Matrix.UserID = "@bridge:local"
+	cfg.Matrix.InsecureSkipTLS = true
+	source := NewMatrixClientSource(cfg, store, "matrix-token")
+
+	if err := source.SyncOnce(ctx, svc); err != nil {
+		t.Fatalf("SyncOnce returned error: %v", err)
+	}
+	if len(api.updates) != 1 || api.updates[0].Text != "edited body" {
+		t.Fatalf("expected edit update, got %#v", api.updates)
+	}
+	if len(api.reactions) != 1 || !strings.Contains(api.reactions[0], "✅") {
+		t.Fatalf("expected reaction add, got %#v", api.reactions)
+	}
+	if len(api.deletes) != 1 || api.deletes[0] != "$beeper-target" {
+		t.Fatalf("expected delete target, got %#v", api.deletes)
 	}
 }
 

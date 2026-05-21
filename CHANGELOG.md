@@ -16,8 +16,14 @@ public `main` branch.
   per-message profile metadata.
 - Matrix `/sync` source for bidirectional `beeper-source` text messages from
   Cinny/Matrix portal rooms back to Beeper.
+- Matrix `/sync` source support for Matrix -> Beeper media, edits, redactions,
+  and reactions.
+- Beeper Desktop API adapter support for multipart asset uploads, message
+  updates, message deletes, and reaction add/remove calls.
 - Persistent outbound echo suppression so Matrix-originated Beeper sends are
   mapped back to the original Matrix event instead of being mirrored twice.
+- Echo-version preservation so an edited Beeper echo refreshes the existing
+  mapping without overwriting the original Matrix event ID.
 - Matrix-side configuration for homeserver URL, token env, user ID, invite
   user, room prefix, sender fallback, and opt-in local self-signed TLS.
 - Tests that verify Matrix room creation and message send payloads against an
@@ -32,8 +38,6 @@ public `main` branch.
   decisions, and Deeper-style platform detection for Beeper account IDs.
 - Unit tests for the new Beeper-source config, SDK adapter, store, mapping,
   pipeline, WebSocket subscription command, media policy, and safety behavior.
-- GitHub Actions CI for tests, vet, connector race tests, and a performance
-  smoke benchmark.
 - README performance snapshot with measured hot-path improvements.
 - README link to this changelog.
 - Mixed-modality local Synapse E2E coverage for text, image, file, audio, video,
@@ -47,11 +51,7 @@ public `main` branch.
   comparison without parsing human-readable logs.
 - Tested `scripts/perf_metrics.py` helper for metadata, summary generation, and
   performance gate checks.
-- Optional `PERF_ENFORCE_GATES=1` mode, now enabled for the CI performance smoke
-  benchmark.
-- GitHub Actions upgraded to Node 24-compatible action versions to avoid the
-  2026 Node 20 runner deprecation (`checkout@v5`, `setup-go@v6`,
-  `upload-artifact@v7`).
+- Optional `PERF_ENFORCE_GATES=1` mode for local performance smoke benchmarks.
 - More regression tests for Beeper media normalization, capability contracts,
   poll fallbacks, edit cleanup, metadata isolation, and performance gate parsing.
 - Performance gates now fail explicitly when requested Synapse E2E summaries are
@@ -88,6 +88,21 @@ public `main` branch.
   allocations to 12 allocations per clone.
 - Cache the complete generated fallback avatar object, reducing repeated
   fallback avatar calls from 3 allocations to 0 allocations in the benchmark.
+- Latest `beeper-source` 500-text-message reconcile benchmark on Apple M4 Pro:
+  `23546335 ns/op`, `1440584 B/op`, `31661 allocs/op`.
+
+### Changed
+
+- Removed the GitHub Actions workflow and README CI badge so validation stays
+  local-only in the VCVM, as requested.
+
+### Verified
+
+- Live Matrix/Cinny -> Beeper Signal test group E2E for text, image, edit,
+  reaction, and delete.
+- Live Matrix/Cinny -> Beeper WhatsApp test group E2E for text and image.
+- Browser-verified Cinny v4.11.1 room list with the Beeper BotE2E Signal,
+  WhatsApp, and sh-vcvm Matrix rooms visible.
 
 ## 2026-05-20
 
@@ -138,5 +153,6 @@ Latest measured local run on Apple M4 Pro:
 | `BenchmarkCloneMessageContent` | ~150 ns/op, 576 B/op, 5 allocs/op |
 | `BenchmarkGeneratedFallbackAvatarFromMXC` | ~5.9 ns/op, 0 B/op, 0 allocs/op |
 | `BenchmarkCloneRawMap` | ~664 ns/op, 1736 B/op, 12 allocs/op |
+| `BenchmarkReconcileFiveHundredTextMessages` | ~23.5 ms/op, 1.44 MB/op, 31661 allocs/op |
 | Local Synapse burst E2E | 10/10, 40/40, and 100/100 messages delivered |
 | Local Synapse mixed-modality E2E | text, edit, sticker, reaction, redaction, poll, room state, and call invite delivered |

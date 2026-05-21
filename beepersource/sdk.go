@@ -3,10 +3,12 @@ package beepersource
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	beeperdesktopapi "github.com/beeper/desktop-api-go/v5"
 	"github.com/beeper/desktop-api-go/v5/option"
+	"github.com/beeper/desktop-api-go/v5/packages/param"
 	"github.com/beeper/desktop-api-go/v5/shared"
 )
 
@@ -101,11 +103,104 @@ func (a *DesktopAPIAdapter) SendMessage(ctx context.Context, outbound BeeperOutb
 	if outbound.ReplyToID != "" {
 		params.ReplyToMessageID = beeperdesktopapi.String(outbound.ReplyToID)
 	}
+	if outbound.Attachment != nil {
+		upload, err := a.uploadAttachment(ctx, outbound.Attachment)
+		if err != nil {
+			return "", err
+		}
+		params.Attachment = beeperdesktopapi.MessageSendParamsAttachment{
+			UploadID: upload.UploadID,
+			FileName: param.NewOpt(upload.FileName),
+			MimeType: param.NewOpt(upload.MimeType),
+			Type:     outbound.Attachment.Type,
+		}
+		if upload.Width > 0 && upload.Height > 0 {
+			params.Attachment.Size = beeperdesktopapi.MessageSendParamsAttachmentSize{
+				Width:  upload.Width,
+				Height: upload.Height,
+			}
+		}
+		if upload.Duration > 0 {
+			params.Attachment.Duration = param.NewOpt(upload.Duration)
+		}
+	}
 	resp, err := a.sdk.Client.Messages.Send(ctx, outbound.ChatID, params)
 	if err != nil {
 		return "", err
 	}
 	return resp.PendingMessageID, nil
+}
+
+func (a *DesktopAPIAdapter) uploadAttachment(ctx context.Context, attachment *OutboundAttachment) (*beeperdesktopapi.AssetUploadResponse, error) {
+	defer attachment.Content.Close()
+	resp, err := a.sdk.Client.Assets.Upload(ctx, beeperdesktopapi.AssetUploadParams{
+		File:     namedAttachmentReader{ReadCloser: attachment.Content, fileName: attachment.FileName, contentType: attachment.MimeType},
+		FileName: param.NewOpt(attachment.FileName),
+		MimeType: param.NewOpt(attachment.MimeType),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf("Beeper asset upload failed: %s", resp.Error)
+	}
+	if resp.FileName == "" {
+		resp.FileName = attachment.FileName
+	}
+	if resp.MimeType == "" {
+		resp.MimeType = attachment.MimeType
+	}
+	if resp.Width == 0 && attachment.Width > 0 {
+		resp.Width = float64(attachment.Width)
+	}
+	if resp.Height == 0 && attachment.Height > 0 {
+		resp.Height = float64(attachment.Height)
+	}
+	if resp.Duration == 0 && attachment.DurationMS > 0 {
+		resp.Duration = float64(attachment.DurationMS) / 1000
+	}
+	return resp, nil
+}
+
+type namedAttachmentReader struct {
+	io.ReadCloser
+	fileName    string
+	contentType string
+}
+
+func (r namedAttachmentReader) Name() string        { return r.fileName }
+func (r namedAttachmentReader) ContentType() string { return r.contentType }
+
+func (a *DesktopAPIAdapter) UpdateMessage(ctx context.Context, chatID, messageID, text string) error {
+	_, err := a.sdk.Client.Messages.Update(ctx, messageID, beeperdesktopapi.MessageUpdateParams{
+		ChatID: chatID,
+		Text:   text,
+	})
+	return err
+}
+
+func (a *DesktopAPIAdapter) DeleteMessage(ctx context.Context, chatID, messageID string, forEveryone bool) error {
+	return a.sdk.Client.Messages.Delete(ctx, messageID, beeperdesktopapi.MessageDeleteParams{
+		ChatID:      chatID,
+		ForEveryone: param.NewOpt(forEveryone),
+	})
+}
+
+func (a *DesktopAPIAdapter) AddReaction(ctx context.Context, chatID, messageID, reactionKey, txnID string) error {
+	_, err := a.sdk.Client.Chats.Messages.Reactions.Add(ctx, messageID, beeperdesktopapi.ChatMessageReactionAddParams{
+		ChatID:        chatID,
+		ReactionKey:   reactionKey,
+		TransactionID: param.NewOpt(txnID),
+	})
+	return err
+}
+
+func (a *DesktopAPIAdapter) RemoveReaction(ctx context.Context, chatID, messageID, reactionKey string) error {
+	_, err := a.sdk.Client.Chats.Messages.Reactions.Delete(ctx, reactionKey, beeperdesktopapi.ChatMessageReactionDeleteParams{
+		ChatID:    chatID,
+		MessageID: messageID,
+	})
+	return err
 }
 
 func convertSDKChat(in beeperdesktopapi.Chat) Chat {

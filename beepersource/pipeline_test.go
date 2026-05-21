@@ -257,11 +257,63 @@ func TestReconcileSuppressesEchoAfterMatrixToBeeperSend(t *testing.T) {
 	}
 }
 
+func TestReconcilePreservesMatrixOriginMappingWhenEchoVersionChanges(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	api := &fakeBeeperAPI{
+		chats: []Chat{{ID: "!chat:beeper", AccountID: "signal", Name: "Edited Echo"}},
+		messages: map[string][]Message{
+			"!chat:beeper": {{
+				ID:              "$beeper-echo",
+				ChatID:          "!chat:beeper",
+				SenderID:        "@self:signal",
+				Type:            MessageTypeText,
+				Text:            "edited in Matrix",
+				Timestamp:       time.Now().UTC(),
+				EditedTimestamp: ptrTime(time.Unix(200, 0).UTC()),
+			}},
+		},
+	}
+	matrix := &fakeMatrixSink{}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+	if err := store.UpsertMessageMapping(ctx, MessageMapping{
+		BeeperMessageID: "$beeper-echo",
+		MatrixEventID:   "$matrix-origin:local",
+		ChatID:          "!chat:beeper",
+		Version:         "old",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(matrix.events) != 0 {
+		t.Fatalf("expected changed echo to preserve mapping without a duplicate Matrix event, got %#v", matrix.events)
+	}
+	mapping, ok, err := store.MessageByBeeperID(ctx, "$beeper-echo")
+	if err != nil || !ok {
+		t.Fatalf("expected echo mapping, ok=%v err=%v", ok, err)
+	}
+	if mapping.MatrixEventID != "$matrix-origin:local" {
+		t.Fatalf("expected origin mapping to survive version update, got %q", mapping.MatrixEventID)
+	}
+	if mapping.Version == "old" {
+		t.Fatal("expected version to be refreshed")
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
+
 type fakeBeeperAPI struct {
-	chats    []Chat
-	messages map[string][]Message
-	assets   map[string]string
-	sent     []BeeperOutbound
+	chats     []Chat
+	messages  map[string][]Message
+	assets    map[string]string
+	sent      []BeeperOutbound
+	updates   []BeeperOutbound
+	deletes   []string
+	reactions []string
 }
 
 func (f *fakeBeeperAPI) Health(context.Context) error { return nil }
@@ -285,6 +337,26 @@ func (f *fakeBeeperAPI) DownloadAsset(ctx context.Context, assetURL string) (*As
 func (f *fakeBeeperAPI) SendMessage(ctx context.Context, outbound BeeperOutbound) (string, error) {
 	f.sent = append(f.sent, outbound)
 	return "$beeper-sent", nil
+}
+
+func (f *fakeBeeperAPI) UpdateMessage(ctx context.Context, chatID, messageID, text string) error {
+	f.updates = append(f.updates, BeeperOutbound{ChatID: chatID, Text: text, ClientTxnID: messageID})
+	return nil
+}
+
+func (f *fakeBeeperAPI) DeleteMessage(ctx context.Context, chatID, messageID string, forEveryone bool) error {
+	f.deletes = append(f.deletes, messageID)
+	return nil
+}
+
+func (f *fakeBeeperAPI) AddReaction(ctx context.Context, chatID, messageID, reactionKey, txnID string) error {
+	f.reactions = append(f.reactions, chatID+"|"+messageID+"|"+reactionKey+"|"+txnID)
+	return nil
+}
+
+func (f *fakeBeeperAPI) RemoveReaction(ctx context.Context, chatID, messageID, reactionKey string) error {
+	f.reactions = append(f.reactions, "delete|"+chatID+"|"+messageID+"|"+reactionKey)
+	return nil
 }
 
 type fakeMatrixSink struct {
