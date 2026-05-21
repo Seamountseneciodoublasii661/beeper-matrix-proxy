@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -207,6 +209,66 @@ func TestReconcileDownloadsChatAvatarForNewPortal(t *testing.T) {
 	}
 }
 
+func TestReconcileResolvesRelativeBeeperAvatarURL(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	api := &fakeBeeperAPI{
+		chats: []Chat{{
+			ID:        "!chat:beeper",
+			AccountID: "telegram",
+			Name:      "Relative Avatar",
+			AvatarURL: "/_matrix/media/v3/download/beeper/avatar",
+		}},
+		messages: map[string][]Message{"!chat:beeper": nil},
+		assets:   map[string]string{"http://localhost:23373/_matrix/media/v3/download/beeper/avatar": "avatar-bytes"},
+	}
+	matrix := &fakeMatrixSink{}
+	cfg := DefaultConfig()
+	cfg.Beeper.BaseURL = "http://localhost:23373"
+	svc := NewService(cfg, store, api, matrix)
+
+	if err := svc.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce returned error: %v", err)
+	}
+	if len(api.downloadedAssets) != 1 || api.downloadedAssets[0] != "http://localhost:23373/_matrix/media/v3/download/beeper/avatar" {
+		t.Fatalf("expected resolved Beeper avatar URL, got %#v", api.downloadedAssets)
+	}
+	if len(matrix.avatars) != 1 {
+		t.Fatalf("expected one portal avatar, got %d", len(matrix.avatars))
+	}
+}
+
+func TestResolveBeeperAssetURLKeepsAbsoluteLocalPaths(t *testing.T) {
+	got := resolveBeeperAssetURL("http://localhost:23373", "/Users/mh/Library/Application%20Support/BeeperTexts/media/avatar.jpg")
+
+	if got != "/Users/mh/Library/Application%20Support/BeeperTexts/media/avatar.jpg" {
+		t.Fatalf("expected absolute local path to stay local, got %q", got)
+	}
+}
+
+func TestLocalAvatarMediaReadsEscapedLocalPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "avatar file.png")
+	if err := os.WriteFile(path, []byte("png-ish"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	escaped := strings.ReplaceAll(path, " ", "%20")
+
+	avatar, ok, err := localAvatarMedia(escaped)
+	if err != nil || !ok {
+		t.Fatalf("expected escaped local path avatar, ok=%v err=%v", ok, err)
+	}
+	defer avatar.Content.(io.Closer).Close()
+	body, err := io.ReadAll(avatar.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "png-ish" {
+		t.Fatalf("unexpected avatar body %q", string(body))
+	}
+}
+
 func TestReconcilePortalsOnlyCreatesRoomsWithoutMessages(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -242,6 +304,48 @@ func TestReconcilePortalsOnlyCreatesRoomsWithoutMessages(t *testing.T) {
 	roomID, ok, err := store.PortalRoomID(ctx, "!chat:beeper")
 	if err != nil || !ok || roomID == "" {
 		t.Fatalf("expected portal mapping, roomID=%q ok=%v err=%v", roomID, ok, err)
+	}
+}
+
+func TestReconcilePortalsOnlyRefreshesExistingPortalProfiles(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	chat := Chat{
+		ID:        "!chat:beeper",
+		AccountID: "telegram",
+		Network:   "Telegram",
+		Name:      "Existing Chat",
+		AvatarURL: "localmxc://avatar-v2",
+	}
+	if err := store.UpsertPortal(ctx, chat, "!existing:local", "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetValue(ctx, portalProfileSyncKey(chat.ID), "stale-profile"); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{
+		chats:    []Chat{chat},
+		messages: map[string][]Message{"!chat:beeper": nil},
+		assets:   map[string]string{"localmxc://avatar-v2": "avatar-v2"},
+	}
+	matrix := &fakeMatrixSink{}
+	cfg := DefaultConfig()
+	cfg.Matrix.RoomNamePrefix = ""
+	cfg.Matrix.RoomNameIncludePlatform = false
+	svc := NewService(cfg, store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error: %v", err)
+	}
+	if matrix.portalAttempts[chat.ID] != 1 {
+		t.Fatalf("expected existing portal to be refreshed once, got %d attempts", matrix.portalAttempts[chat.ID])
+	}
+	if len(matrix.events) != 0 {
+		t.Fatalf("expected no message imports, got %#v", matrix.events)
+	}
+	if len(matrix.avatars) != 1 {
+		t.Fatalf("expected existing portal avatar refresh, got %d avatars", len(matrix.avatars))
 	}
 }
 
@@ -382,6 +486,48 @@ func TestReconcilePortalsOnlyRecreatesInaccessibleExistingPortal(t *testing.T) {
 	}
 	if got := matrix.portalAttempts[chat.ID]; got != 1 {
 		t.Fatalf("expected inaccessible portal to be recreated once, got %d attempts", got)
+	}
+}
+
+func TestReconcilePortalsOnlyRefreshesWhenAccessibilityCheckFails(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	chat := Chat{ID: "!check-fails:beeper", AccountID: "telegram", Network: "Telegram", Name: "Check Fails"}
+	if err := store.UpsertPortal(ctx, chat, "!existing:local", ""); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{chats: []Chat{chat}}
+	matrix := &fakeMatrixSink{accessErrs: map[string]error{"!existing:local": errors.New("matrix state check timed out")}}
+	svc := NewService(DefaultConfig(), store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error: %v", err)
+	}
+	if got := matrix.portalAttempts[chat.ID]; got != 1 {
+		t.Fatalf("expected existing portal to still be refreshed once, got %d attempts", got)
+	}
+}
+
+func TestReconcilePortalsOnlyCanSkipAccessibilityChecks(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	chat := Chat{ID: "!skip-check:beeper", AccountID: "telegram", Network: "Telegram", Name: "Skip Check"}
+	if err := store.UpsertPortal(ctx, chat, "!existing:local", ""); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeBeeperAPI{chats: []Chat{chat}}
+	matrix := &fakeMatrixSink{accessErrs: map[string]error{"!existing:local": errors.New("should not be called")}}
+	cfg := DefaultConfig()
+	cfg.Sync.PortalCheckAccess = false
+	svc := NewService(cfg, store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error: %v", err)
+	}
+	if got := matrix.portalAttempts[chat.ID]; got != 1 {
+		t.Fatalf("expected existing portal to be refreshed once, got %d attempts", got)
 	}
 }
 
@@ -646,13 +792,14 @@ func TestReconcilePreservesMatrixOriginMappingWhenEchoVersionChanges(t *testing.
 func ptrTime(t time.Time) *time.Time { return &t }
 
 type fakeBeeperAPI struct {
-	chats     []Chat
-	messages  map[string][]Message
-	assets    map[string]string
-	sent      []BeeperOutbound
-	updates   []BeeperOutbound
-	deletes   []string
-	reactions []string
+	chats            []Chat
+	messages         map[string][]Message
+	assets           map[string]string
+	downloadedAssets []string
+	sent             []BeeperOutbound
+	updates          []BeeperOutbound
+	deletes          []string
+	reactions        []string
 }
 
 func (f *fakeBeeperAPI) Health(context.Context) error { return nil }
@@ -666,6 +813,7 @@ func (f *fakeBeeperAPI) ListMessages(ctx context.Context, chatID string, afterCu
 }
 
 func (f *fakeBeeperAPI) DownloadAsset(ctx context.Context, assetURL string) (*AssetStream, error) {
+	f.downloadedAssets = append(f.downloadedAssets, assetURL)
 	return &AssetStream{
 		Content:   io.NopCloser(strings.NewReader(f.assets[assetURL])),
 		MimeType:  "application/octet-stream",
@@ -705,6 +853,7 @@ type fakeMatrixSink struct {
 	failPortals         map[string]error
 	failPortalSequences map[string][]error
 	inaccessibleRooms   map[string]bool
+	accessErrs          map[string]error
 	portalAttempts      map[string]int
 	avatars             []*MatrixMedia
 	spaceChats          []Chat
@@ -733,6 +882,9 @@ func (f *fakeMatrixSink) EnsurePortal(ctx context.Context, chat Chat, avatar *Ma
 func (f *fakeMatrixSink) PortalAccessible(ctx context.Context, roomID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.accessErrs[roomID]; err != nil {
+		return false, err
+	}
 	return !f.inaccessibleRooms[roomID], nil
 }
 

@@ -22,7 +22,21 @@ func TestApplyRoomsOnlySafetyForcesReadOnlyAndKillSwitch(t *testing.T) {
 	if !cfg.Matrix.Spaces {
 		t.Fatal("expected rooms-only mode to enable Matrix spaces")
 	}
-	if !cfg.Matrix.PlatformAvatars {
-		t.Fatal("expected rooms-only mode to enable platform avatars")
+	if cfg.Matrix.PlatformAvatars {
+		t.Fatal("expected rooms-only mode to keep real Beeper avatars preferred")
+	}
+	if cfg.Matrix.RoomNameIncludePlatform {
+		t.Fatal("expected rooms-only mode to omit platform brackets because spaces group rooms by service")
+	}
+}
+
+func TestApplyRoomsOnlySafetyRespectsExplicitSpacesOff(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_MATRIX_SPACES", "false")
+	cfg := beepersource.DefaultConfig()
+
+	applyRoomsOnlySafety(&cfg)
+
+	if cfg.Matrix.Spaces {
+		t.Fatal("expected explicit Matrix spaces=false to be preserved for refresh-only imports")
 	}
 }

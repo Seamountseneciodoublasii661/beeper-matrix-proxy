@@ -23,15 +23,16 @@ type BeeperConfig struct {
 }
 
 type MatrixConfig struct {
-	HomeserverURL   string
-	TokenEnv        string
-	UserID          string
-	InviteUserID    string
-	RoomNamePrefix  string
-	PrefixSender    bool
-	PlatformAvatars bool
-	Spaces          bool
-	InsecureSkipTLS bool
+	HomeserverURL           string
+	TokenEnv                string
+	UserID                  string
+	InviteUserID            string
+	RoomNamePrefix          string
+	RoomNameIncludePlatform bool
+	PrefixSender            bool
+	PlatformAvatars         bool
+	Spaces                  bool
+	InsecureSkipTLS         bool
 }
 
 type SyncConfig struct {
@@ -40,6 +41,7 @@ type SyncConfig struct {
 	PortalWorkers        int
 	PortalTimeoutSeconds int
 	IncludeArchived      bool
+	PortalCheckAccess    bool
 }
 
 type MediaConfig struct {
@@ -59,15 +61,16 @@ func DefaultConfig() Config {
 			ChatIDs:          envCSV("BEEPER_MATRIX_PROXY_BEEPER_CHAT_IDS"),
 		},
 		Matrix: MatrixConfig{
-			HomeserverURL:   envString("BEEPER_MATRIX_PROXY_MATRIX_HOMESERVER_URL", "http://localhost:8008"),
-			TokenEnv:        envString("BEEPER_MATRIX_PROXY_MATRIX_TOKEN_ENV", "MATRIX_ACCESS_TOKEN"),
-			UserID:          envString("BEEPER_MATRIX_PROXY_MATRIX_USER_ID", ""),
-			InviteUserID:    envString("BEEPER_MATRIX_PROXY_MATRIX_INVITE_USER_ID", ""),
-			RoomNamePrefix:  envString("BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX", "Beeper: "),
-			PrefixSender:    envBool("BEEPER_MATRIX_PROXY_MATRIX_PREFIX_SENDER", true),
-			PlatformAvatars: envBool("BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS", false),
-			Spaces:          envBool("BEEPER_MATRIX_PROXY_MATRIX_SPACES", false),
-			InsecureSkipTLS: envBool("BEEPER_MATRIX_PROXY_MATRIX_INSECURE_TLS", false),
+			HomeserverURL:           envString("BEEPER_MATRIX_PROXY_MATRIX_HOMESERVER_URL", "http://localhost:8008"),
+			TokenEnv:                envString("BEEPER_MATRIX_PROXY_MATRIX_TOKEN_ENV", "MATRIX_ACCESS_TOKEN"),
+			UserID:                  envString("BEEPER_MATRIX_PROXY_MATRIX_USER_ID", ""),
+			InviteUserID:            envString("BEEPER_MATRIX_PROXY_MATRIX_INVITE_USER_ID", ""),
+			RoomNamePrefix:          envStringAllowEmpty("BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX", "Beeper: "),
+			RoomNameIncludePlatform: envBool("BEEPER_MATRIX_PROXY_MATRIX_ROOM_INCLUDE_PLATFORM", true),
+			PrefixSender:            envBool("BEEPER_MATRIX_PROXY_MATRIX_PREFIX_SENDER", true),
+			PlatformAvatars:         envBool("BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS", false),
+			Spaces:                  envBool("BEEPER_MATRIX_PROXY_MATRIX_SPACES", false),
+			InsecureSkipTLS:         envBool("BEEPER_MATRIX_PROXY_MATRIX_INSECURE_TLS", false),
 		},
 		Sync: SyncConfig{
 			Mode:                 envString("BEEPER_MATRIX_PROXY_SYNC_MODE", SyncModeBidirectional),
@@ -75,6 +78,7 @@ func DefaultConfig() Config {
 			PortalWorkers:        envInt("BEEPER_MATRIX_PROXY_PORTAL_WORKERS", 1),
 			PortalTimeoutSeconds: envInt("BEEPER_MATRIX_PROXY_PORTAL_TIMEOUT_SECONDS", 75),
 			IncludeArchived:      envBool("BEEPER_MATRIX_PROXY_INCLUDE_ARCHIVED", false),
+			PortalCheckAccess:    envBool("BEEPER_MATRIX_PROXY_PORTAL_CHECK_ACCESS", true),
 		},
 		Media: MediaConfig{
 			MaxUploadBytes: envInt64("BEEPER_MATRIX_PROXY_MEDIA_MAX_UPLOAD_BYTES", 0),
@@ -143,6 +147,13 @@ func (c Config) MatrixToken() (string, error) {
 
 func envString(key, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envStringAllowEmpty(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
 		return value
 	}
 	return fallback

@@ -40,7 +40,23 @@ public `main` branch.
 - `cmd/beeper-source -rooms-only` now forcibly applies the safety mode for
   all-chat imports by setting sync mode to read-only and disabling
   Matrix -> Beeper sends regardless of the surrounding environment. It also
-  enables Matrix Spaces and platform logo avatars for the all-chat Cinny import.
+  enables Matrix Spaces for the all-chat Cinny import while keeping real
+  Beeper/BIPA chat avatars preferred over platform-logo room avatars.
+- `BEEPER_MATRIX_PROXY_MATRIX_ROOM_INCLUDE_PLATFORM` controls whether portal
+  room names include bracketed service names such as `[Telegram]`; rooms-only
+  mode disables the bracket because Matrix Spaces group rooms by service.
+- Relative Beeper/BIPA avatar asset URLs are resolved against
+  `BEEPER_MATRIX_PROXY_BEEPER_BASE_URL` before download, so rooms can use the
+  full chat/person profile picture when Beeper exposes one.
+- Rooms-only imports now refresh existing portal room names, topics, and
+  avatars instead of only creating missing portals; this keeps idempotent
+  re-runs useful after config changes.
+- `BEEPER_MATRIX_PROXY_PORTAL_CHECK_ACCESS=false` can skip stale-room access
+  probes for fast read-only profile/avatar refresh runs, while the default keeps
+  stale portal recovery enabled.
+- Absolute local Beeper avatar paths, including escaped `Application%20Support`
+  paths, are kept local and uploaded directly instead of being incorrectly
+  rewritten as Desktop API URLs.
 - Matrix Space organization for Beeper-source rooms: rooms-only import now
   creates a Beeper root space, creates one service space per messenger network,
   and links each portal room under its service space.

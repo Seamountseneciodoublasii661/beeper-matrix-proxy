@@ -101,7 +101,7 @@ func (s *Service) ReconcilePortalsOnly(ctx context.Context) error {
 		return err
 	}
 	allowedChats := make([]Chat, 0, len(chats))
-	missing := make([]Chat, 0, len(chats))
+	toEnsure := make([]Chat, 0, len(chats))
 	for _, chat := range chats {
 		if !s.cfg.AllowsBeeperChatRecord(chat) {
 			continue
@@ -110,27 +110,33 @@ func (s *Service) ReconcilePortalsOnly(ctx context.Context) error {
 		if roomID, ok, err := s.store.PortalRoomID(ctx, chat.ID); err != nil {
 			return err
 		} else if ok {
-			if checker, ok := s.matrix.(MatrixPortalAccessChecker); ok {
+			if s.cfg.Sync.PortalCheckAccess {
+				checker, ok := s.matrix.(MatrixPortalAccessChecker)
+				if !ok {
+					toEnsure = append(toEnsure, chat)
+					continue
+				}
 				accessible, err := checker.PortalAccessible(ctx, roomID)
 				if err != nil {
-					return fmt.Errorf("check Matrix portal accessibility for %s: %w", chat.ID, err)
+					toEnsure = append(toEnsure, chat)
+					continue
 				}
 				if !accessible {
 					if err := s.store.DeletePortal(ctx, chat.ID); err != nil {
 						return err
 					}
-					missing = append(missing, chat)
 				}
 			}
+			toEnsure = append(toEnsure, chat)
 			continue
 		}
-		missing = append(missing, chat)
+		toEnsure = append(toEnsure, chat)
 	}
-	if len(missing) > 0 {
-		workers := minPositive(s.cfg.Sync.PortalWorkers, len(missing))
+	if len(toEnsure) > 0 {
+		workers := minPositive(s.cfg.Sync.PortalWorkers, len(toEnsure))
 		backpressure := newPortalBackpressure(workers)
 		jobs := make(chan Chat)
-		errs := make(chan error, len(missing))
+		errs := make(chan error, len(toEnsure))
 		var wg sync.WaitGroup
 		timeout := time.Duration(s.cfg.Sync.PortalTimeoutSeconds) * time.Second
 		for range workers {
@@ -147,7 +153,7 @@ func (s *Service) ReconcilePortalsOnly(ctx context.Context) error {
 				}
 			}()
 		}
-		for _, chat := range missing {
+		for _, chat := range toEnsure {
 			select {
 			case jobs <- chat:
 			case <-ctx.Done():
@@ -322,7 +328,7 @@ func (s *Service) ensurePortal(ctx context.Context, chat Chat) (string, error) {
 		return "", err
 	}
 	if avatar != nil {
-		if err := s.store.SetValue(ctx, portalAvatarSyncKey(chat.ID), portalAvatarSyncValue(chat)); err != nil {
+		if err := s.store.SetValue(ctx, portalAvatarSyncKey(chat.ID), s.portalAvatarSyncValue(chat)); err != nil {
 			return "", err
 		}
 	}
@@ -344,14 +350,15 @@ func (s *Service) portalAvatar(ctx context.Context, chat Chat) (*MatrixMedia, er
 		}
 		return platformAvatarMedia(chat), nil
 	}
+	avatarURL := s.resolveBeeperAssetURL(chat.AvatarURL)
 	lastAvatar, err := s.store.GetValue(ctx, portalAvatarSyncKey(chat.ID))
-	if err != nil || lastAvatar == chat.AvatarURL {
+	if err != nil || lastAvatar == avatarURL {
 		return nil, err
 	}
-	if avatar, ok, err := localAvatarMedia(chat.AvatarURL); ok || err != nil {
+	if avatar, ok, err := localAvatarMedia(avatarURL); ok || err != nil {
 		return avatar, err
 	}
-	asset, err := s.api.DownloadAsset(ctx, chat.AvatarURL)
+	asset, err := s.api.DownloadAsset(ctx, avatarURL)
 	if err != nil {
 		return nil, err
 	}
@@ -364,6 +371,46 @@ func (s *Service) portalAvatar(ctx context.Context, chat Chat) (*MatrixMedia, er
 		MimeType:  mimeType,
 		SizeBytes: asset.SizeBytes,
 	}, nil
+}
+
+func (s *Service) portalAvatarSyncValue(chat Chat) string {
+	if s.cfg.Matrix.PlatformAvatars || strings.TrimSpace(chat.AvatarURL) == "" {
+		return platformAvatarSyncValue(chat)
+	}
+	return s.resolveBeeperAssetURL(chat.AvatarURL)
+}
+
+func (s *Service) resolveBeeperAssetURL(rawURL string) string {
+	return resolveBeeperAssetURL(s.cfg.Beeper.BaseURL, rawURL)
+}
+
+func resolveBeeperAssetURL(baseURL, rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err == nil && parsed.IsAbs() {
+		return rawURL
+	}
+	if err != nil || !strings.HasPrefix(rawURL, "/") {
+		return rawURL
+	}
+	if filepath.IsAbs(rawURL) && !looksLikeBeeperHTTPAssetPath(rawURL) {
+		return rawURL
+	}
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || !base.IsAbs() {
+		return rawURL
+	}
+	return base.ResolveReference(parsed).String()
+}
+
+func looksLikeBeeperHTTPAssetPath(rawURL string) bool {
+	return strings.HasPrefix(rawURL, "/_matrix/") ||
+		strings.HasPrefix(rawURL, "/v1/") ||
+		strings.HasPrefix(rawURL, "/media/") ||
+		strings.HasPrefix(rawURL, "/assets/")
 }
 
 func platformAvatarMedia(chat Chat) *MatrixMedia {
@@ -434,6 +481,9 @@ func localAvatarMedia(rawPath string) (*MatrixMedia, bool, error) {
 		}
 		path = parsed.Path
 	}
+	if decoded, err := url.PathUnescape(path); err == nil {
+		path = decoded
+	}
 	if strings.Contains(path, "://") {
 		return nil, false, nil
 	}
@@ -467,13 +517,6 @@ func localAvatarMedia(rawPath string) (*MatrixMedia, bool, error) {
 
 func portalAvatarSyncKey(chatID string) string {
 	return "portal_avatar:" + chatID
-}
-
-func portalAvatarSyncValue(chat Chat) string {
-	if chat.AvatarURL != "" {
-		return chat.AvatarURL
-	}
-	return platformAvatarSyncValue(chat)
 }
 
 func (s *Service) mirrorMessage(ctx context.Context, roomID string, msg Message) error {

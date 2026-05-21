@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/id"
 )
 
 func TestMatrixClientSinkCreatesRoomAndSendsMessage(t *testing.T) {
@@ -166,6 +170,125 @@ func TestMatrixClientSinkCreatesRoomAndSendsMessage(t *testing.T) {
 	}
 	if sentURL != "mxc://local/uploaded" || sentFileName != "image.png" {
 		t.Fatalf("unexpected media payload url=%q filename=%q", sentURL, sentFileName)
+	}
+}
+
+func TestPortalProfileCanOmitPlatformFromRoomName(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Matrix.RoomNamePrefix = ""
+	cfg.Matrix.RoomNameIncludePlatform = false
+
+	name, topic, value := portalProfileSyncValue(cfg, Chat{
+		ID:        "!chat:beeper",
+		AccountID: "telegram",
+		Network:   "Telegram",
+		Name:      "hermes - Macbook",
+	})
+
+	if name != "hermes - Macbook" {
+		t.Fatalf("expected room name without platform brackets, got %q", name)
+	}
+	if strings.Contains(name, "[Telegram]") {
+		t.Fatalf("expected no bracketed platform in room name, got %q", name)
+	}
+	if !strings.Contains(topic, "Telegram") {
+		t.Fatalf("expected topic to keep service context, got %q", topic)
+	}
+	if !strings.Contains(value, "hermes - Macbook") {
+		t.Fatalf("expected sync value to include profile, got %q", value)
+	}
+}
+
+func TestPortalProfileOmittingPlatformStripsLegacyImportedPrefix(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Matrix.RoomNamePrefix = ""
+	cfg.Matrix.RoomNameIncludePlatform = false
+
+	name, _, _ := portalProfileSyncValue(cfg, Chat{
+		ID:        "!chat:beeper",
+		AccountID: "telegram",
+		Network:   "Telegram",
+		Name:      "Beeper: [Telegram] [MM] ALERTS",
+	})
+
+	if name != "[MM] ALERTS" {
+		t.Fatalf("expected legacy Beeper/platform prefix to be stripped, got %q", name)
+	}
+}
+
+func TestMatrixClientSinkSpaceParentUsesRequestDeadline(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	cfg := DefaultConfig()
+	cfg.Sync.PortalTimeoutSeconds = 2
+	cli, err := mautrix.NewClient("https://matrix.local", id.UserID("@proxy:local"), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli.Client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		deadline, ok := req.Context().Deadline()
+		if !ok {
+			return nil, errors.New("request context has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > 3*time.Second {
+			return nil, errors.New("request context deadline is outside portal timeout")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"event_id":"$state:local"}`)),
+			Request:    req,
+		}, nil
+	})}
+	sink := &MatrixClientSink{cfg: cfg, store: store, client: cli}
+
+	if err := sink.linkSpaceParent(ctx, "!child:local", "!parent:local", true); err != nil {
+		t.Fatalf("expected space parent link to use deadline-bound request context: %v", err)
+	}
+}
+
+func TestMatrixClientSinkStateRequestDeadlineIsCapped(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Sync.PortalTimeoutSeconds = 180
+	sink := &MatrixClientSink{cfg: cfg}
+
+	reqCtx, cancel := sink.requestContext(context.Background())
+	defer cancel()
+	deadline, ok := reqCtx.Deadline()
+	if !ok {
+		t.Fatal("expected request context deadline")
+	}
+	if remaining := time.Until(deadline); remaining > 31*time.Second {
+		t.Fatalf("expected state request timeout to be capped near 30s, got %s", remaining)
+	}
+}
+
+func TestMatrixClientSinkPortalAccessibleUsesRequestDeadline(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Matrix.HomeserverURL = "https://matrix.local"
+	cfg.Sync.PortalTimeoutSeconds = 2
+	cli, err := mautrix.NewClient(cfg.Matrix.HomeserverURL, id.UserID("@proxy:local"), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli.Client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if _, ok := req.Context().Deadline(); !ok {
+			return nil, errors.New("request context has no deadline")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"type":"m.room.create"}`)),
+			Request:    req,
+		}, nil
+	})}
+	sink := &MatrixClientSink{cfg: cfg, client: cli, accessToken: "token"}
+
+	ok, err := sink.PortalAccessible(context.Background(), "!room:local")
+	if err != nil || !ok {
+		t.Fatalf("expected accessible portal with deadline-bound request, ok=%v err=%v", ok, err)
 	}
 }
 
@@ -472,6 +595,12 @@ func TestMatrixClientSinkDoesNotCreateRoomWhenAvatarUploadFails(t *testing.T) {
 	if createdRoom {
 		t.Fatal("room should not be created after avatar upload failure")
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func pathsContainEscapedRoomID(paths []string, roomID string) bool {

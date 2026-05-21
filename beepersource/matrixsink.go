@@ -130,8 +130,10 @@ func (m *MatrixClientSink) createRoom(ctx context.Context, req *mautrix.ReqCreat
 	if err != nil {
 		return nil, err
 	}
+	reqCtx, cancel := m.requestContext(ctx)
+	defer cancel()
 	url := strings.TrimRight(m.cfg.Matrix.HomeserverURL, "/") + "/_matrix/client/v3/createRoom"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +164,11 @@ func (m *MatrixClientSink) createRoom(ctx context.Context, req *mautrix.ReqCreat
 }
 
 func (m *MatrixClientSink) PortalAccessible(ctx context.Context, roomID string) (bool, error) {
+	reqCtx, cancel := m.requestContext(ctx)
+	defer cancel()
 	url := strings.TrimRight(m.cfg.Matrix.HomeserverURL, "/") +
 		"/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/state/m.room.create/"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, err
 	}
@@ -222,7 +226,7 @@ func (m *MatrixClientSink) EnsurePortalSpaces(ctx context.Context, chats []Chat)
 			return err
 		}
 		sort.Slice(platformChats, func(i, j int) bool {
-			return roomDisplayName(platformChats[i]) < roomDisplayName(platformChats[j])
+			return roomDisplayName(m.cfg, platformChats[i]) < roomDisplayName(m.cfg, platformChats[j])
 		})
 		for _, chat := range platformChats {
 			roomID, ok, err := m.store.PortalRoomID(ctx, chat.ID)
@@ -232,7 +236,7 @@ func (m *MatrixClientSink) EnsurePortalSpaces(ctx context.Context, chats []Chat)
 			if !ok {
 				continue
 			}
-			if err := m.linkSpaceChild(ctx, spaceID, roomID, roomDisplayName(chat), false); err != nil {
+			if err := m.linkSpaceChild(ctx, spaceID, roomID, roomDisplayName(m.cfg, chat), false); err != nil {
 				return err
 			}
 			if err := m.linkSpaceParent(ctx, roomID, spaceID, true); err != nil {
@@ -288,17 +292,17 @@ func (m *MatrixClientSink) ensureSpace(ctx context.Context, key string, name str
 }
 
 func (m *MatrixClientSink) updateSpaceMetadata(ctx context.Context, roomID string, name string, topic string, avatar *MatrixMedia) error {
-	if _, err := m.client.SendStateEvent(ctx, id.RoomID(roomID), event.StateRoomName, "", &event.RoomNameEventContent{Name: name}); err != nil {
+	if _, err := m.sendStateEvent(ctx, id.RoomID(roomID), event.StateRoomName, "", &event.RoomNameEventContent{Name: name}); err != nil {
 		return err
 	}
-	if _, err := m.client.SendStateEvent(ctx, id.RoomID(roomID), event.StateTopic, "", &event.TopicEventContent{Topic: topic}); err != nil {
+	if _, err := m.sendStateEvent(ctx, id.RoomID(roomID), event.StateTopic, "", &event.TopicEventContent{Topic: topic}); err != nil {
 		return err
 	}
 	return m.updateRoomAvatar(ctx, roomID, avatar)
 }
 
 func (m *MatrixClientSink) linkSpaceChild(ctx context.Context, parentRoomID string, childRoomID string, order string, suggested bool) error {
-	_, err := m.client.SendStateEvent(ctx, id.RoomID(parentRoomID), event.StateSpaceChild, childRoomID, &event.SpaceChildEventContent{
+	_, err := m.sendStateEvent(ctx, id.RoomID(parentRoomID), event.StateSpaceChild, childRoomID, &event.SpaceChildEventContent{
 		Via:       []string{m.matrixServerName()},
 		Order:     spaceOrder(order),
 		Suggested: suggested,
@@ -307,7 +311,7 @@ func (m *MatrixClientSink) linkSpaceChild(ctx context.Context, parentRoomID stri
 }
 
 func (m *MatrixClientSink) linkSpaceParent(ctx context.Context, childRoomID string, parentRoomID string, canonical bool) error {
-	_, err := m.client.SendStateEvent(ctx, id.RoomID(childRoomID), event.StateSpaceParent, parentRoomID, &event.SpaceParentEventContent{
+	_, err := m.sendStateEvent(ctx, id.RoomID(childRoomID), event.StateSpaceParent, parentRoomID, &event.SpaceParentEventContent{
 		Via:       []string{m.matrixServerName()},
 		Canonical: canonical,
 	})
@@ -315,7 +319,7 @@ func (m *MatrixClientSink) linkSpaceParent(ctx context.Context, childRoomID stri
 }
 
 func (m *MatrixClientSink) clearSpaceParent(ctx context.Context, childRoomID string, parentRoomID string) error {
-	_, err := m.client.SendStateEvent(ctx, id.RoomID(childRoomID), event.StateSpaceParent, parentRoomID, map[string]any{})
+	_, err := m.sendStateEvent(ctx, id.RoomID(childRoomID), event.StateSpaceParent, parentRoomID, map[string]any{})
 	return err
 }
 
@@ -391,10 +395,10 @@ func (m *MatrixClientSink) updateRoomMetadata(ctx context.Context, roomID string
 	if err != nil || last == value {
 		return err
 	}
-	if _, err = m.client.SendStateEvent(ctx, id.RoomID(roomID), event.StateRoomName, "", &event.RoomNameEventContent{Name: name}); err != nil {
+	if _, err = m.sendStateEvent(ctx, id.RoomID(roomID), event.StateRoomName, "", &event.RoomNameEventContent{Name: name}); err != nil {
 		return err
 	}
-	if _, err = m.client.SendStateEvent(ctx, id.RoomID(roomID), event.StateTopic, "", &event.TopicEventContent{Topic: topic}); err != nil {
+	if _, err = m.sendStateEvent(ctx, id.RoomID(roomID), event.StateTopic, "", &event.TopicEventContent{Topic: topic}); err != nil {
 		return err
 	}
 	return m.store.SetValue(ctx, key, value)
@@ -405,7 +409,7 @@ func portalProfileSyncKey(chatID string) string {
 }
 
 func portalProfileSyncValue(cfg Config, chat Chat) (name string, topic string, value string) {
-	name = strings.TrimSpace(cfg.Matrix.RoomNamePrefix + roomDisplayName(chat))
+	name = strings.TrimSpace(cfg.Matrix.RoomNamePrefix + roomDisplayName(cfg, chat))
 	topic = fmt.Sprintf("Beeper source chat %s from %s (%s)", chat.ID, PlatformDisplayName(chat), chat.AccountID)
 	return name, topic, name + "\x00" + topic
 }
@@ -415,11 +419,28 @@ func (m *MatrixClientSink) updateRoomAvatar(ctx context.Context, roomID string, 
 	if err != nil || avatarURL == "" {
 		return err
 	}
-	_, err = m.client.SendStateEvent(ctx, id.RoomID(roomID), event.StateRoomAvatar, "", &event.RoomAvatarEventContent{
+	_, err = m.sendStateEvent(ctx, id.RoomID(roomID), event.StateRoomAvatar, "", &event.RoomAvatarEventContent{
 		URL:  avatarURL,
 		Info: info,
 	})
 	return err
+}
+
+func (m *MatrixClientSink) sendStateEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, stateKey string, content any) (*mautrix.RespSendEvent, error) {
+	reqCtx, cancel := m.requestContext(ctx)
+	defer cancel()
+	return m.client.SendStateEvent(reqCtx, roomID, eventType, stateKey, content)
+}
+
+func (m *MatrixClientSink) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := time.Duration(m.cfg.Sync.PortalTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 75 * time.Second
+	}
+	if timeout > 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (m *MatrixClientSink) uploadAvatar(ctx context.Context, avatar *MatrixMedia) (id.ContentURIString, *event.FileInfo, error) {
@@ -527,9 +548,16 @@ func (m *MatrixClientSink) SendMessage(ctx context.Context, outbound MatrixOutbo
 	return resp.EventID.String(), nil
 }
 
-func roomDisplayName(chat Chat) string {
+func roomDisplayName(cfg Config, chat Chat) string {
 	account := PlatformDisplayName(chat)
 	name := strings.TrimSpace(chat.Name)
+	if !cfg.Matrix.RoomNameIncludePlatform {
+		name = stripLegacyRoomNamePlatform(name, account)
+		if name != "" {
+			return name
+		}
+		return account
+	}
 	if account == "" {
 		return name
 	}
@@ -537,6 +565,20 @@ func roomDisplayName(chat Chat) string {
 		return "[" + account + "]"
 	}
 	return "[" + account + "] " + name
+}
+
+func stripLegacyRoomNamePlatform(name, account string) string {
+	name = strings.TrimSpace(name)
+	if strings.HasPrefix(name, "Beeper:") {
+		name = strings.TrimSpace(strings.TrimPrefix(name, "Beeper:"))
+	}
+	if account != "" {
+		prefix := "[" + account + "]"
+		if strings.HasPrefix(name, prefix) {
+			name = strings.TrimSpace(strings.TrimPrefix(name, prefix))
+		}
+	}
+	return name
 }
 
 func (m *MatrixClientSink) uploadLocalAvatar(ctx context.Context, rawURL string) (id.ContentURIString, *event.FileInfo, error) {

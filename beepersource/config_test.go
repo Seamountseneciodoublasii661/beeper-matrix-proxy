@@ -60,6 +60,26 @@ func TestConfigCanEnableMatrixSpaces(t *testing.T) {
 	}
 }
 
+func TestConfigCanOmitPlatformFromRoomNames(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_MATRIX_ROOM_INCLUDE_PLATFORM", "false")
+
+	cfg := DefaultConfig()
+
+	if cfg.Matrix.RoomNameIncludePlatform {
+		t.Fatal("expected room names to omit platform from env")
+	}
+}
+
+func TestConfigCanClearRoomNamePrefix(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX", "")
+
+	cfg := DefaultConfig()
+
+	if cfg.Matrix.RoomNamePrefix != "" {
+		t.Fatalf("expected empty room name prefix from env, got %q", cfg.Matrix.RoomNamePrefix)
+	}
+}
+
 func TestConfigCanTunePortalWorkersAndArchivedChats(t *testing.T) {
 	t.Setenv("BEEPER_MATRIX_PROXY_PORTAL_WORKERS", "8")
 	t.Setenv("BEEPER_MATRIX_PROXY_PORTAL_TIMEOUT_SECONDS", "25")
@@ -75,6 +95,16 @@ func TestConfigCanTunePortalWorkersAndArchivedChats(t *testing.T) {
 	}
 	if !cfg.Sync.IncludeArchived {
 		t.Fatal("expected archived chats to be included from env")
+	}
+}
+
+func TestConfigCanDisablePortalAccessChecks(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_PORTAL_CHECK_ACCESS", "false")
+
+	cfg := DefaultConfig()
+
+	if cfg.Sync.PortalCheckAccess {
+		t.Fatal("expected portal access checks to be disabled from env")
 	}
 }
 
