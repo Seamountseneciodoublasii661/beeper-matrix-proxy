@@ -50,6 +50,16 @@ func TestConfigCanPreferPlatformAvatars(t *testing.T) {
 	}
 }
 
+func TestConfigCanEnableMatrixSpaces(t *testing.T) {
+	t.Setenv("BEEPER_MATRIX_PROXY_MATRIX_SPACES", "true")
+
+	cfg := DefaultConfig()
+
+	if !cfg.Matrix.Spaces {
+		t.Fatal("expected Matrix spaces to be enabled from env")
+	}
+}
+
 func TestConfigCanTunePortalWorkersAndArchivedChats(t *testing.T) {
 	t.Setenv("BEEPER_MATRIX_PROXY_PORTAL_WORKERS", "8")
 	t.Setenv("BEEPER_MATRIX_PROXY_PORTAL_TIMEOUT_SECONDS", "25")

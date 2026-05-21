@@ -235,6 +235,97 @@ func TestMatrixClientSinkReusesCachedPortalAvatar(t *testing.T) {
 	}
 }
 
+func TestMatrixClientSinkCreatesServiceSpacesAndLinksPortals(t *testing.T) {
+	var createdSpaces []string
+	var spaceChildLinks []string
+	var spaceParentLinks []string
+	uploadCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/upload"):
+			uploadCount++
+			_ = json.NewEncoder(w).Encode(map[string]string{"content_uri": "mxc://local/logo"})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/createRoom"):
+			var body struct {
+				Name            string         `json:"name"`
+				CreationContent map[string]any `json:"creation_content"`
+				InitialState    []struct {
+					Type string `json:"type"`
+				} `json:"initial_state"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode create room body: %v", err)
+			}
+			if body.CreationContent["type"] != "m.space" {
+				t.Fatalf("expected m.space creation for %q, got %#v", body.Name, body.CreationContent)
+			}
+			createdSpaces = append(createdSpaces, body.Name)
+			roomID := "!space-root:local"
+			if body.Name == "WhatsApp" {
+				roomID = "!space-whatsapp:local"
+			}
+			if body.Name == "Signal" {
+				roomID = "!space-signal:local"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"room_id": roomID})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/state/m.space.child/"):
+			spaceChildLinks = append(spaceChildLinks, r.URL.Path)
+			_ = json.NewEncoder(w).Encode(map[string]string{"event_id": "$child:local"})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/state/m.space.parent/"):
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode space parent body: %v", err)
+			}
+			if len(body) > 0 {
+				spaceParentLinks = append(spaceParentLinks, r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"event_id": "$parent:local"})
+		default:
+			t.Fatalf("unexpected Matrix request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	wa := Chat{ID: "!wa:beeper", AccountID: "whatsapp", Network: "WhatsApp", Name: "Family"}
+	sig := Chat{ID: "!sig:beeper", AccountID: "signal", Network: "Signal", Name: "Friends"}
+	if err := store.UpsertPortal(ctx, wa, "!portal-wa:local", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertPortal(ctx, sig, "!portal-sig:local", ""); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	cfg.Matrix.HomeserverURL = server.URL
+	cfg.Matrix.UserID = "@proxy:local"
+	sink, err := NewMatrixClientSink(cfg, store, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sink.EnsurePortalSpaces(ctx, []Chat{wa, sig}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(createdSpaces, ",") != "Beeper,Signal,WhatsApp" {
+		t.Fatalf("unexpected space creation order/names: %#v", createdSpaces)
+	}
+	if uploadCount != 3 {
+		t.Fatalf("expected root and platform space logos to upload, got %d", uploadCount)
+	}
+	for _, want := range []string{"!space-signal:local", "!space-whatsapp:local", "!portal-sig:local", "!portal-wa:local"} {
+		if !pathsContainEscapedRoomID(spaceChildLinks, want) {
+			t.Fatalf("expected m.space.child link for %s in %#v", want, spaceChildLinks)
+		}
+	}
+	for _, want := range []string{"!space-signal:local", "!space-whatsapp:local"} {
+		if !pathsContainEscapedRoomID(spaceParentLinks, want) {
+			t.Fatalf("expected m.space.parent link for %s in %#v", want, spaceParentLinks)
+		}
+	}
+}
+
 func TestMatrixClientSinkReturnsRateLimitRetryAfterForCreateRoom(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/createRoom") {
@@ -381,4 +472,15 @@ func TestMatrixClientSinkDoesNotCreateRoomWhenAvatarUploadFails(t *testing.T) {
 	if createdRoom {
 		t.Fatal("room should not be created after avatar upload failure")
 	}
+}
+
+func pathsContainEscapedRoomID(paths []string, roomID string) bool {
+	escaped := strings.ReplaceAll(roomID, "!", "%21")
+	escaped = strings.ReplaceAll(escaped, ":", "%3A")
+	for _, path := range paths {
+		if strings.Contains(path, escaped) || strings.Contains(path, roomID) {
+			return true
+		}
+	}
+	return false
 }

@@ -94,4 +94,6 @@ func exitIfErr(label string, err error) {
 func applyRoomsOnlySafety(cfg *beepersource.Config) {
 	cfg.Sync.Mode = beepersource.SyncModeReadOnly
 	cfg.Safety.DisableMatrixToBeeper = true
+	cfg.Matrix.Spaces = true
+	cfg.Matrix.PlatformAvatars = true
 }

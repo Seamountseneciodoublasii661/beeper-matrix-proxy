@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -184,6 +185,165 @@ func (m *MatrixClientSink) PortalAccessible(ctx context.Context, roomID string) 
 		return false, rateErr
 	}
 	return false, fmt.Errorf("check room state failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+}
+
+func (m *MatrixClientSink) EnsurePortalSpaces(ctx context.Context, chats []Chat) error {
+	if len(chats) == 0 {
+		return nil
+	}
+	rootID, err := m.ensureSpace(ctx, "matrix_space:root", "Beeper", "Beeper bridge workspace", platformAvatarMedia(Chat{Network: "Beeper"}))
+	if err != nil {
+		return err
+	}
+	byPlatform := make(map[string][]Chat)
+	for _, chat := range chats {
+		if _, ok, err := m.store.PortalRoomID(ctx, chat.ID); err != nil {
+			return err
+		} else if ok {
+			platform := PlatformDisplayName(chat)
+			byPlatform[platform] = append(byPlatform[platform], chat)
+		}
+	}
+	platforms := make([]string, 0, len(byPlatform))
+	for platform := range byPlatform {
+		platforms = append(platforms, platform)
+	}
+	sort.Strings(platforms)
+	for _, platform := range platforms {
+		platformChats := byPlatform[platform]
+		spaceID, err := m.ensureSpace(ctx, "matrix_space:platform:"+platform, platform, "Beeper "+platform+" chats", platformAvatarMedia(platformChats[0]))
+		if err != nil {
+			return err
+		}
+		if err := m.linkSpaceChild(ctx, rootID, spaceID, platform, true); err != nil {
+			return err
+		}
+		if err := m.clearSpaceParent(ctx, spaceID, rootID); err != nil {
+			return err
+		}
+		sort.Slice(platformChats, func(i, j int) bool {
+			return roomDisplayName(platformChats[i]) < roomDisplayName(platformChats[j])
+		})
+		for _, chat := range platformChats {
+			roomID, ok, err := m.store.PortalRoomID(ctx, chat.ID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			if err := m.linkSpaceChild(ctx, spaceID, roomID, roomDisplayName(chat), false); err != nil {
+				return err
+			}
+			if err := m.linkSpaceParent(ctx, roomID, spaceID, true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MatrixClientSink) ensureSpace(ctx context.Context, key string, name string, topic string, avatar *MatrixMedia) (string, error) {
+	if roomID, err := m.store.GetValue(ctx, key); err != nil {
+		return "", err
+	} else if roomID != "" {
+		if err := m.updateSpaceMetadata(ctx, roomID, name, topic, avatar); err != nil {
+			return "", err
+		}
+		return roomID, nil
+	}
+	req := &mautrix.ReqCreateRoom{
+		Name:            name,
+		Topic:           topic,
+		Preset:          "private_chat",
+		CreationContent: map[string]interface{}{"type": string(event.RoomTypeSpace)},
+	}
+	if m.cfg.Matrix.InviteUserID != "" {
+		req.Invite = []id.UserID{id.UserID(m.cfg.Matrix.InviteUserID)}
+	}
+	if avatar != nil {
+		avatarURL, info, err := m.uploadAvatar(ctx, avatar)
+		if err != nil {
+			return "", err
+		}
+		if avatarURL != "" {
+			req.InitialState = append(req.InitialState, &event.Event{
+				Type: event.StateRoomAvatar,
+				Content: event.Content{Parsed: &event.RoomAvatarEventContent{
+					URL:  avatarURL,
+					Info: info,
+				}},
+			})
+		}
+	}
+	resp, err := m.createRoom(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	roomID := resp.RoomID.String()
+	if err := m.store.SetValue(ctx, key, roomID); err != nil {
+		return "", err
+	}
+	return roomID, nil
+}
+
+func (m *MatrixClientSink) updateSpaceMetadata(ctx context.Context, roomID string, name string, topic string, avatar *MatrixMedia) error {
+	if _, err := m.client.SendStateEvent(ctx, id.RoomID(roomID), event.StateRoomName, "", &event.RoomNameEventContent{Name: name}); err != nil {
+		return err
+	}
+	if _, err := m.client.SendStateEvent(ctx, id.RoomID(roomID), event.StateTopic, "", &event.TopicEventContent{Topic: topic}); err != nil {
+		return err
+	}
+	return m.updateRoomAvatar(ctx, roomID, avatar)
+}
+
+func (m *MatrixClientSink) linkSpaceChild(ctx context.Context, parentRoomID string, childRoomID string, order string, suggested bool) error {
+	_, err := m.client.SendStateEvent(ctx, id.RoomID(parentRoomID), event.StateSpaceChild, childRoomID, &event.SpaceChildEventContent{
+		Via:       []string{m.matrixServerName()},
+		Order:     spaceOrder(order),
+		Suggested: suggested,
+	})
+	return err
+}
+
+func (m *MatrixClientSink) linkSpaceParent(ctx context.Context, childRoomID string, parentRoomID string, canonical bool) error {
+	_, err := m.client.SendStateEvent(ctx, id.RoomID(childRoomID), event.StateSpaceParent, parentRoomID, &event.SpaceParentEventContent{
+		Via:       []string{m.matrixServerName()},
+		Canonical: canonical,
+	})
+	return err
+}
+
+func (m *MatrixClientSink) clearSpaceParent(ctx context.Context, childRoomID string, parentRoomID string) error {
+	_, err := m.client.SendStateEvent(ctx, id.RoomID(childRoomID), event.StateSpaceParent, parentRoomID, map[string]any{})
+	return err
+}
+
+func (m *MatrixClientSink) matrixServerName() string {
+	if _, server, ok := strings.Cut(m.cfg.Matrix.UserID, ":"); ok && server != "" {
+		return server
+	}
+	if parsed, err := url.Parse(m.cfg.Matrix.HomeserverURL); err == nil && parsed.Hostname() != "" {
+		return parsed.Hostname()
+	}
+	return "localhost"
+}
+
+func spaceOrder(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "0"
+	}
+	value = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, value)
+	if len(value) > 50 {
+		value = value[:50]
+	}
+	return value
 }
 
 func parseMatrixRateLimit(statusCode int, headers http.Header, body []byte) *MatrixRateLimitError {

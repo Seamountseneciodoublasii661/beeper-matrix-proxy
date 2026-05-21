@@ -271,8 +271,8 @@ func TestReconcileCanPreferPlatformAvatarsOverChatAvatars(t *testing.T) {
 	if len(matrix.avatars) != 1 {
 		t.Fatalf("expected one platform avatar, got %d", len(matrix.avatars))
 	}
-	if matrix.avatars[0].MimeType != "image/svg+xml" {
-		t.Fatalf("expected platform SVG avatar, got %#v", matrix.avatars[0])
+	if matrix.avatars[0].MimeType != "image/png" {
+		t.Fatalf("expected platform PNG avatar, got %#v", matrix.avatars[0])
 	}
 }
 
@@ -382,6 +382,33 @@ func TestReconcilePortalsOnlyRecreatesInaccessibleExistingPortal(t *testing.T) {
 	}
 	if got := matrix.portalAttempts[chat.ID]; got != 1 {
 		t.Fatalf("expected inaccessible portal to be recreated once, got %d attempts", got)
+	}
+}
+
+func TestReconcilePortalsOnlyOrganizesExistingPortalsIntoSpaces(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	chats := []Chat{
+		{ID: "!wa:beeper", AccountID: "whatsapp", Network: "WhatsApp", Name: "WA"},
+		{ID: "!sig:beeper", AccountID: "signal", Network: "Signal", Name: "Signal"},
+	}
+	for _, chat := range chats {
+		if err := store.UpsertPortal(ctx, chat, "!matrix-"+chat.ID, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api := &fakeBeeperAPI{chats: chats}
+	matrix := &fakeMatrixSink{}
+	cfg := DefaultConfig()
+	cfg.Matrix.Spaces = true
+	svc := NewService(cfg, store, api, matrix)
+
+	if err := svc.ReconcilePortalsOnly(ctx); err != nil {
+		t.Fatalf("ReconcilePortalsOnly returned error: %v", err)
+	}
+	if got := len(matrix.spaceChats); got != 2 {
+		t.Fatalf("expected existing portals to be organized into spaces, got %d chats", got)
 	}
 }
 
@@ -680,6 +707,7 @@ type fakeMatrixSink struct {
 	inaccessibleRooms   map[string]bool
 	portalAttempts      map[string]int
 	avatars             []*MatrixMedia
+	spaceChats          []Chat
 }
 
 func (f *fakeMatrixSink) EnsurePortal(ctx context.Context, chat Chat, avatar *MatrixMedia) (string, error) {
@@ -706,6 +734,13 @@ func (f *fakeMatrixSink) PortalAccessible(ctx context.Context, roomID string) (b
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return !f.inaccessibleRooms[roomID], nil
+}
+
+func (f *fakeMatrixSink) EnsurePortalSpaces(ctx context.Context, chats []Chat) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spaceChats = append([]Chat(nil), chats...)
+	return nil
 }
 
 func (f *fakeMatrixSink) EnsurePuppet(ctx context.Context, sender Sender) (string, error) {

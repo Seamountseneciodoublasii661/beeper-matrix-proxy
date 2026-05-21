@@ -19,4 +19,10 @@ func TestApplyRoomsOnlySafetyForcesReadOnlyAndKillSwitch(t *testing.T) {
 	if !cfg.Safety.DisableMatrixToBeeper {
 		t.Fatal("expected rooms-only mode to disable Matrix -> Beeper sends")
 	}
+	if !cfg.Matrix.Spaces {
+		t.Fatal("expected rooms-only mode to enable Matrix spaces")
+	}
+	if !cfg.Matrix.PlatformAvatars {
+		t.Fatal("expected rooms-only mode to enable platform avatars")
+	}
 }

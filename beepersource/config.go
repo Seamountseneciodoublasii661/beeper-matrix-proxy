@@ -30,6 +30,7 @@ type MatrixConfig struct {
 	RoomNamePrefix  string
 	PrefixSender    bool
 	PlatformAvatars bool
+	Spaces          bool
 	InsecureSkipTLS bool
 }
 
@@ -65,6 +66,7 @@ func DefaultConfig() Config {
 			RoomNamePrefix:  envString("BEEPER_MATRIX_PROXY_MATRIX_ROOM_PREFIX", "Beeper: "),
 			PrefixSender:    envBool("BEEPER_MATRIX_PROXY_MATRIX_PREFIX_SENDER", true),
 			PlatformAvatars: envBool("BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS", false),
+			Spaces:          envBool("BEEPER_MATRIX_PROXY_MATRIX_SPACES", false),
 			InsecureSkipTLS: envBool("BEEPER_MATRIX_PROXY_MATRIX_INSECURE_TLS", false),
 		},
 		Sync: SyncConfig{

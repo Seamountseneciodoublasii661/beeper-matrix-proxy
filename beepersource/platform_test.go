@@ -1,6 +1,10 @@
 package beepersource
 
-import "testing"
+import (
+	"io"
+	"strings"
+	"testing"
+)
 
 func TestPlatformDisplayNamePrefersBeeperNetwork(t *testing.T) {
 	chat := Chat{AccountID: "local-whatsapp_abc", Network: "WhatsApp"}
@@ -21,10 +25,46 @@ func TestPlatformAvatarMediaUsesMessengerInitials(t *testing.T) {
 	if avatar == nil {
 		t.Fatal("expected generated avatar")
 	}
-	if avatar.MimeType != "image/svg+xml" {
+	if avatar.MimeType != "image/png" {
 		t.Fatalf("unexpected mime %q", avatar.MimeType)
 	}
-	if avatar.FileName != "whatsapp-bridge.svg" {
+	if avatar.FileName != "whatsapp-bridge.png" {
 		t.Fatalf("unexpected filename %q", avatar.FileName)
 	}
+}
+
+func TestPlatformAvatarMediaUsesMessengerLogoForKnownServices(t *testing.T) {
+	avatar := platformAvatarMedia(Chat{AccountID: "signal", Network: "Signal"})
+	body := readMatrixMediaBytes(t, avatar)
+
+	if avatar.MimeType != "image/png" {
+		t.Fatalf("expected Signal logo PNG, got %s", avatar.MimeType)
+	}
+	if len(body) < 8 || string(body[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Fatalf("expected PNG signature, got %q", body[:min(8, len(body))])
+	}
+}
+
+func TestPlatformAvatarMediaFallsBackToInitialsForUnknownServices(t *testing.T) {
+	avatar := platformAvatarMedia(Chat{AccountID: "custom-network", Network: "Custom Network"})
+	body := readMatrixMediaString(t, avatar)
+
+	if !strings.Contains(body, "<text") || !strings.Contains(body, "CN") {
+		t.Fatalf("expected initials fallback for unknown service: %s", body)
+	}
+}
+
+func readMatrixMediaBytes(t *testing.T, media *MatrixMedia) []byte {
+	t.Helper()
+	body, err := io.ReadAll(media.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func readMatrixMediaString(t *testing.T, media *MatrixMedia) string {
+	t.Helper()
+	body := readMatrixMediaBytes(t, media)
+	return string(body)
 }

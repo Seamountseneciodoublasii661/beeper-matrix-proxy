@@ -39,11 +39,21 @@ public `main` branch.
   is no longer reachable by the bridge account.
 - `cmd/beeper-source -rooms-only` now forcibly applies the safety mode for
   all-chat imports by setting sync mode to read-only and disabling
-  Matrix -> Beeper sends regardless of the surrounding environment.
+  Matrix -> Beeper sends regardless of the surrounding environment. It also
+  enables Matrix Spaces and platform logo avatars for the all-chat Cinny import.
+- Matrix Space organization for Beeper-source rooms: rooms-only import now
+  creates a Beeper root space, creates one service space per messenger network,
+  and links each portal room under its service space.
+- Top-level service-space layout for Cinny: WhatsApp, Signal, Telegram,
+  bridgev2, and Beeper(Matrix) spaces are left visible as their own workspaces
+  while still being linked from the Beeper root space.
 - Platform avatar uploads are cached in SQLite `media_cache`, so hundreds of
   WhatsApp/Signal/Telegram rooms can reuse the same Matrix `mxc://` icon
-  instead of reuploading identical SVGs.
-- Beeper `network` names on Matrix rooms plus optional generated platform SVG
+  instead of reuploading identical PNGs.
+- Generated PNG platform logo avatars under `platform-logo-v3:*`, replacing
+  SVG initials for known services so Cinny can render service icons more
+  reliably.
+- Beeper `network` names on Matrix rooms plus generated platform PNG
   avatars (`BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS=true`) for WhatsApp,
   Signal, Telegram, and other services.
 - Matrix `/sync` source for bidirectional `beeper-source` text messages from
@@ -81,6 +91,9 @@ public `main` branch.
   6 archived, 701 Matrix portal rows, 0 missing active chats, 701/701 portal
   rooms joined by `@cinny_beeper_test:100.120.120.120`, and a saved Cinny
   screenshot at `/tmp/beeper-source-cinny-all-chats-final.png`.
+- README live Matrix Spaces evidence: 5 service spaces under the Beeper root,
+  6/6 spaces joined by the Cinny test user, and PNG avatar state verified for
+  all service spaces.
 - README link to this changelog.
 - Mixed-modality local Synapse E2E coverage for text, image, file, audio, video,
   location, emote, notice, edits, stickers, reactions, redactions, polls, room
@@ -155,9 +168,9 @@ public `main` branch.
   audio; Cinny rendered the Matrix rooms with file controls, GIF previews, and
   audio playback controls.
 - Live VCVM all-chat rooms-only import measured 700 Beeper chats via paginated
-  `/v1/chats` (690 active, 10 archived). The safe import runs with Matrix ->
-  Beeper disabled, platform SVG avatars, and resumable portal creation because
-  Synapse room creation rate-limits still apply.
+  `/v1/chats` (694 active, 6 archived). The safe import runs with Matrix ->
+  Beeper disabled, Matrix Spaces, PNG platform avatars, and resumable portal
+  creation because Synapse room creation rate-limits still apply.
 
 ## 2026-05-20
 

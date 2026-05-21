@@ -41,6 +41,10 @@ type MatrixPortalAccessChecker interface {
 	PortalAccessible(context.Context, string) (bool, error)
 }
 
+type MatrixSpaceOrganizer interface {
+	EnsurePortalSpaces(context.Context, []Chat) error
+}
+
 type Service struct {
 	cfg    Config
 	store  *Store
@@ -96,11 +100,13 @@ func (s *Service) ReconcilePortalsOnly(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	allowedChats := make([]Chat, 0, len(chats))
 	missing := make([]Chat, 0, len(chats))
 	for _, chat := range chats {
 		if !s.cfg.AllowsBeeperChatRecord(chat) {
 			continue
 		}
+		allowedChats = append(allowedChats, chat)
 		if roomID, ok, err := s.store.PortalRoomID(ctx, chat.ID); err != nil {
 			return err
 		} else if ok {
@@ -120,51 +126,57 @@ func (s *Service) ReconcilePortalsOnly(ctx context.Context) error {
 		}
 		missing = append(missing, chat)
 	}
-	if len(missing) == 0 {
-		return nil
-	}
-	workers := minPositive(s.cfg.Sync.PortalWorkers, len(missing))
-	backpressure := newPortalBackpressure(workers)
-	jobs := make(chan Chat)
-	errs := make(chan error, len(missing))
-	var wg sync.WaitGroup
-	timeout := time.Duration(s.cfg.Sync.PortalTimeoutSeconds) * time.Second
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for chat := range jobs {
-				chatCtx, chatCancel := context.WithTimeout(ctx, timeout)
-				err := s.ensurePortalWithBackoff(chatCtx, chat, backpressure)
-				chatCancel()
-				if err != nil {
-					errs <- err
+	if len(missing) > 0 {
+		workers := minPositive(s.cfg.Sync.PortalWorkers, len(missing))
+		backpressure := newPortalBackpressure(workers)
+		jobs := make(chan Chat)
+		errs := make(chan error, len(missing))
+		var wg sync.WaitGroup
+		timeout := time.Duration(s.cfg.Sync.PortalTimeoutSeconds) * time.Second
+		for range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for chat := range jobs {
+					chatCtx, chatCancel := context.WithTimeout(ctx, timeout)
+					err := s.ensurePortalWithBackoff(chatCtx, chat, backpressure)
+					chatCancel()
+					if err != nil {
+						errs <- err
+					}
 				}
+			}()
+		}
+		for _, chat := range missing {
+			select {
+			case jobs <- chat:
+			case <-ctx.Done():
+				close(jobs)
+				wg.Wait()
+				return ctx.Err()
 			}
-		}()
-	}
-	for _, chat := range missing {
-		select {
-		case jobs <- chat:
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			return ctx.Err()
+		}
+		close(jobs)
+		wg.Wait()
+		close(errs)
+		var firstErr error
+		failures := 0
+		for err := range errs {
+			failures++
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		if firstErr != nil {
+			return fmt.Errorf("%d portal room(s) failed and can be retried by rerunning rooms-only: %w", failures, firstErr)
 		}
 	}
-	close(jobs)
-	wg.Wait()
-	close(errs)
-	var firstErr error
-	failures := 0
-	for err := range errs {
-		failures++
-		if firstErr == nil {
-			firstErr = err
+	if s.cfg.Matrix.Spaces {
+		if organizer, ok := s.matrix.(MatrixSpaceOrganizer); ok {
+			if err := organizer.EnsurePortalSpaces(ctx, allowedChats); err != nil {
+				return err
+			}
 		}
-	}
-	if firstErr != nil {
-		return fmt.Errorf("%d portal room(s) failed and can be retried by rerunning rooms-only: %w", failures, firstErr)
 	}
 	return nil
 }
@@ -356,10 +368,16 @@ func (s *Service) portalAvatar(ctx context.Context, chat Chat) (*MatrixMedia, er
 
 func platformAvatarMedia(chat Chat) *MatrixMedia {
 	platform := PlatformDisplayName(chat)
-	initials := PlatformInitials(platform)
-	bg := PlatformColor(chat)
-	fg := "#ffffff"
-	svg := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><text x="128" y="148" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="700" fill="%s">%s</text></svg>`, bg, fg, html.EscapeString(initials))
+	if pngBytes, ok := platformLogoPNG(platform, PlatformColor(chat)); ok {
+		return &MatrixMedia{
+			AssetID:   platformAvatarSyncValue(chat),
+			Content:   bytes.NewReader(pngBytes),
+			FileName:  strings.ToLower(strings.ReplaceAll(platform, " ", "-")) + "-bridge.png",
+			MimeType:  "image/png",
+			SizeBytes: int64(len(pngBytes)),
+		}
+	}
+	svg := platformLogoSVG(platform, PlatformColor(chat))
 	return &MatrixMedia{
 		AssetID:   platformAvatarSyncValue(chat),
 		Content:   bytes.NewReader([]byte(svg)),
@@ -369,8 +387,39 @@ func platformAvatarMedia(chat Chat) *MatrixMedia {
 	}
 }
 
+func platformLogoSVG(platform string, bg string) string {
+	name := strings.TrimSpace(platform)
+	switch strings.ToLower(name) {
+	case "whatsapp":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><path fill="#fff" d="M128 50c-41.4 0-75 31.8-75 71 0 13.5 4 26.1 10.9 36.9L55 206l49.9-12.8A78.8 78.8 0 0 0 128 196c41.4 0 75-31.8 75-71s-33.6-75-75-75z"/><path fill="%s" d="M128 65c32.5 0 59 24.8 59 55.5S160.5 176 128 176c-7.9 0-15.4-1.5-22.3-4.2l-5.2-2.1-23 5.9 4.2-22.3-3.2-4.8a50 50 0 0 1-9.5-28C69 89.8 95.5 65 128 65z"/><path fill="#fff" d="M104 92c-3.9 0-10 8.8-10 16.7 0 19.8 23.8 49 48.8 55.5 9.1 2.4 17.2-6.4 19.2-12.1 1-3.1.5-5.4-1.6-6.5l-18.2-8.6c-2.1-1-4.5-.5-5.9 1.4l-5.4 7.1c-1.2 1.6-3.4 2.1-5.1 1.1-9.7-5.6-17-12.5-22.2-22-1-1.8-.5-4 1.2-5.2l6.6-4.9c1.8-1.3 2.4-3.8 1.4-5.8l-8-15c-.7-1.1-.5-1.7-.8-1.7z"/></svg>`, html.EscapeString(name), bg, bg)
+	case "signal":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><circle cx="128" cy="128" r="62" fill="none" stroke="#fff" stroke-width="18" stroke-dasharray="20 13"/><path fill="#fff" d="M91 118c0-20.4 16.6-37 37-37s37 16.6 37 37-16.6 37-37 37h-21l-27 20 7-29a36.9 36.9 0 0 1 4-28z"/></svg>`, html.EscapeString(name), bg)
+	case "telegram":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><path fill="#fff" d="M205 67 176 199c-2 9-8 11-16 7l-45-33-22 21c-2 2-4 4-9 4l3-47 86-78c4-3-1-5-6-2L61 138l-46-15c-10-3-10-10 2-14L196 40c8-3 15 2 9 27z"/></svg>`, html.EscapeString(name), bg)
+	case "discord":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><path fill="#fff" d="M88 82c25-11 55-11 80 0 15 21 22 44 20 68-22 17-43 24-64 24s-42-7-64-24c-2-24 5-47 20-68zm26 57a12 12 0 1 0 0-24 12 12 0 0 0 0 24zm56 0a12 12 0 1 0 0-24 12 12 0 0 0 0 24zm-62 27c13 6 27 6 40 0"/></svg>`, html.EscapeString(name), bg)
+	case "slack":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><path fill="#fff" d="M86 58a18 18 0 0 1 36 0v48H86V58zm48 0a18 18 0 0 1 36 0v48h-36V58zM58 86h48v36H58a18 18 0 0 1 0-36zm0 48h48v36H58a18 18 0 0 1 0-36zm28 16h36v48a18 18 0 0 1-36 0v-48zm48 0h36v48a18 18 0 0 1-36 0v-48zm16-64h48a18 18 0 0 1 0 36h-48V86zm0 48h48a18 18 0 0 1 0 36h-48v-36z"/></svg>`, html.EscapeString(name), bg)
+	case "instagram":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><rect x="70" y="70" width="116" height="116" rx="30" fill="none" stroke="#fff" stroke-width="16"/><circle cx="128" cy="128" r="28" fill="none" stroke="#fff" stroke-width="16"/><circle cx="163" cy="93" r="10" fill="#fff"/></svg>`, html.EscapeString(name), bg)
+	case "messenger":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><path fill="#fff" d="M128 60c-42 0-76 30-76 67 0 21 11 40 29 52v29l27-15c7 1 13 2 20 2 42 0 76-30 76-68s-34-67-76-67zm-8 90-20-21-39 21 44-47 21 21 38-21-44 47z"/></svg>`, html.EscapeString(name), bg)
+	case "imessage":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><path fill="#fff" d="M128 61c42 0 76 28 76 63s-34 63-76 63c-8 0-16-1-24-3l-39 20 12-35c-16-12-25-28-25-45 0-35 34-63 76-63z"/></svg>`, html.EscapeString(name), bg)
+	case "x":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><path fill="#fff" d="M73 62h34l29 41 36-41h25l-50 57 55 75h-34l-34-47-41 47H68l55-63L73 62zm25 18 79 96h-13L85 80h13z"/></svg>`, html.EscapeString(name), bg)
+	case "linkedin":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><rect x="67" y="103" width="28" height="86" fill="#fff"/><circle cx="81" cy="76" r="16" fill="#fff"/><path fill="#fff" d="M115 103h27v12c6-9 16-15 30-15 29 0 34 20 34 46v43h-28v-39c0-18-4-27-17-27-13 0-18 9-18 27v39h-28v-86z"/></svg>`, html.EscapeString(name), bg)
+	case "matrix", "beeper", "beeper (matrix)", "bridgev2":
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><path fill="#fff" d="M72 60h18v136H72V60zm94 0h18v136h-18V60zM105 86h18v25h10V86h18v84h-18v-42h-10v42h-18V86z"/></svg>`, html.EscapeString(name), bg)
+	default:
+		initials := PlatformInitials(name)
+		return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" data-platform="%s" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="56" fill="%s"/><text x="128" y="148" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="700" fill="#ffffff">%s</text></svg>`, html.EscapeString(name), bg, html.EscapeString(initials))
+	}
+}
+
 func platformAvatarSyncValue(chat Chat) string {
-	return "platform:" + PlatformDisplayName(chat)
+	return "platform-logo-v3:" + PlatformDisplayName(chat)
 }
 
 func localAvatarMedia(rawPath string) (*MatrixMedia, bool, error) {

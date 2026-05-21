@@ -58,7 +58,8 @@ Current `beeper-source` implementation status:
 | Cinny visibility | Supported | Verified in Cinny v4.11.1: WhatsApp, Signal, and sh-vcvm test rooms appear as Matrix rooms. |
 | Beeper chat avatars -> Matrix room icons | Supported | Beeper `imgURL`/asset avatars are uploaded to Matrix and refreshed on existing portal rooms. |
 | All active Beeper chats in Matrix/Cinny | Supported | `cmd/beeper-source -rooms-only` creates/updates portal rooms for every non-archived Beeper chat without importing history or sending to contacts. Latest VCVM run imported all 694 active chats with 0 missing. Archived chats can be opted in. |
-| Platform names/icons | Supported | Room names use Beeper's `network` name (`WhatsApp`, `Signal`, `Telegram`, etc.); optional platform SVG avatars are cached once per service to avoid slow or stale chat-avatar fetches. |
+| Platform names/icons | Supported | Room names use Beeper's `network` name (`WhatsApp`, `Signal`, `Telegram`, etc.); generated platform PNG logo avatars are cached once per service to avoid slow or stale chat-avatar fetches. |
+| Matrix Spaces by messenger | Supported | Rooms-only import creates a Beeper root space and top-level service spaces for WhatsApp, Signal, Telegram, bridgev2, and Beeper(Matrix), then links portal rooms under the matching service. |
 | Echo suppression | Supported | Persistent SQLite echo table maps Beeper echoes back to the original Matrix event, including changed echo versions after edits. |
 | Media policy | Partial | Matrix -> Beeper multipart upload works; oversized-media fallback exists. Full streaming for very large files is still future work. |
 | Deeper enrichment | Partial | Platform detection implemented; contact merging and analytics reports are later. |
@@ -69,6 +70,8 @@ Latest local E2E evidence from 2026-05-21:
 |---|---|---|
 | All-chat rooms-only import | VCVM Synapse + Cinny | Beeper discovery found 700 chats: 694 active and 6 archived. SQLite holds 701 portal rows, all 694 active Beeper chat IDs are present, and `@cinny_beeper_test:100.120.120.120` is joined to 701/701 portal rooms. Screenshot: `/tmp/beeper-source-cinny-all-chats-final.png`. |
 | Rooms-only backpressure/retry | VCVM Synapse | Final idempotency pass completed after accessibility checks in `150.89s`; previous bulk run created 620 new rooms in `439.70s`, resumed in `5.36s`, and recreated stale active portals in `11.20s`. |
+| Matrix Spaces by service | VCVM Synapse + Cinny | Root space has 5 service-space children; service spaces contain WhatsApp 511, Telegram 90, Signal 47, bridgev2 45, and Beeper(Matrix) 1 rooms. `@cinny_beeper_test:100.120.120.120` joined all 6 spaces. Screenshot: `/tmp/beeper-source-cinny-whatsapp-space-png.png`. |
+| Messenger logo avatars | VCVM Synapse + Cinny | Platform avatar cache now uses `platform-logo-v3:*` PNG media. WhatsApp/Signal/Telegram/bridgev2/Beeper(Matrix) service spaces all expose `m.room.avatar` with `image/png`; the WhatsApp PNG was downloaded and verified with a PNG signature. |
 | Matrix/Cinny -> Beeper text | Signal | Message `165648` created from Matrix event `$6B7BFH1w4X_kgCuD9_4T5Ad9TAvAoLmuHWQkSsbBKZA`. |
 | Matrix/Cinny -> Beeper edit | Signal | Same message updated to `edited-ok` and exposed `editedTimestamp`. |
 | Matrix/Cinny -> Beeper reaction | Signal | Matrix reaction became Beeper reaction `🎉`. |
@@ -95,7 +98,7 @@ anything back to real Beeper contacts:
 ```bash
 export BEEPER_MATRIX_PROXY_SYNC_MODE=read_only
 export BEEPER_MATRIX_PROXY_DISABLE_MATRIX_TO_BEEPER=true
-export BEEPER_MATRIX_PROXY_MATRIX_PLATFORM_AVATARS=true
+# rooms-only enables Matrix Spaces and PNG platform logo avatars automatically
 export BEEPER_MATRIX_PROXY_PORTAL_WORKERS=8
 export BEEPER_MATRIX_PROXY_PORTAL_TIMEOUT_SECONDS=180
 # Optional: export BEEPER_MATRIX_PROXY_INCLUDE_ARCHIVED=true
@@ -112,9 +115,12 @@ the normal active Beeper chat list.
 
 Bulk room creation is resumable. Existing accessible portal rows are skipped,
 stale rows whose Matrix rooms are no longer accessible are recreated, platform
-avatars use the `media_cache` key family `platform:*`, and Matrix `429
+avatars use the `media_cache` key family `platform-logo-v3:*`, and Matrix `429
 M_LIMIT_EXCEEDED` responses honor `retry_after_ms`/`Retry-After` with adaptive
-worker backpressure instead of aborting the whole import.
+worker backpressure instead of aborting the whole import. The import also
+creates Matrix Spaces: a Beeper root space links service spaces, and each
+service space links its portal rooms so Cinny can navigate by messenger instead
+of one long flat room list.
 
 ```bash
 export BEEPER_ACCESS_TOKEN="..."
@@ -247,7 +253,7 @@ Legend:
 | Room discovery | Supported | Matrix -> Beeper | Live smoke test | Joined remote Matrix rooms are synced as Beeper portal rooms. |
 | All active Beeper chat discovery | Supported | Beeper -> Matrix | Live VCVM rooms-only import | The Beeper source mode auto-pages `/v1/chats` and can create Cinny-visible rooms for all non-archived Beeper chats. |
 | Room name/topic/avatar | Supported | Matrix -> Beeper | Real Synapse E2E | Uses Matrix room state during chat sync. |
-| Platform labels/icons | Supported | Beeper -> Matrix | Unit tests + live rooms-only import | Uses Beeper `network` names and optional generated platform SVG avatars for WhatsApp/Signal/Telegram/etc.; live VCVM import reused 5 cached platform icons. |
+| Platform labels/icons | Supported | Beeper -> Matrix | Unit tests + live rooms-only import | Uses Beeper `network` names and generated PNG platform logo avatars for WhatsApp/Signal/Telegram/etc.; live VCVM import has 6 cached `platform-logo-v3:*` icons. |
 | Replies | Supported | Both | Regression test + live Signal test group E2E | Beeper-local event IDs are rewritten to Matrix IDs, and Matrix reply IDs are rewritten to Beeper message IDs. |
 | Threads | Partial | Both | Regression test + real Synapse relation E2E | Thread root IDs are rewritten; deeper Beeper UI behavior needs more testing. |
 | Reactions | Supported | Both | Regression test + live Signal test group E2E | Matrix reactions are mapped through Beeper's reaction API; restart-safe remove paths are covered by tests. |
@@ -265,7 +271,7 @@ Legend:
 | Read receipts | Supported | Both | Real Synapse ephemeral E2E | Exact Beeper receipts are sent to remote Matrix; remote Matrix receipts are queued to Beeper. |
 | Native audio/video calls | Not supported | Both | Intentionally hidden | Custom bridges should emit call notices/links instead of fake native call UI. |
 | End-to-end encryption | Planned | Both | Not implemented as a product feature | Needs a separate device, key, and trust model design. |
-| Beeper source rooms | Partial | Bidirectional text, media, edits, deletes, reactions | Live Cinny/Beeper test groups + unit tests | New subsystem creates Matrix rooms from Beeper chats; latest VCVM rooms-only run has 0 missing active chats and 701/701 Cinny-joined portal rooms. True appservice ghost senders, full WebSocket daemon mode, polls, calls, and large-file streaming are next. |
+| Beeper source rooms | Partial | Bidirectional text, media, edits, deletes, reactions | Live Cinny/Beeper test groups + unit tests | New subsystem creates Matrix rooms from Beeper chats and groups them with Matrix Spaces by messenger service; latest VCVM rooms-only run has 0 missing active chats, 701/701 Cinny-joined portal rooms, and 6/6 Cinny-joined spaces. True appservice ghost senders, full WebSocket daemon mode, polls, calls, and large-file streaming are next. |
 
 ## Can This Reuse Existing Beeper Bridges?
 
